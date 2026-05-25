@@ -1,0 +1,17 @@
+# Isolated, dev-only generator for the vendored OTLP protobuf Rust modules.
+#
+# This crate is deliberately NOT a member of the auspex package and NOT a
+# build-dependency: it exists solely to be run on demand via `just gen-proto`.
+# Keeping prost-build / protox here means the auspex crate's own build (and every
+# downstream build) depends only on the lightweight `prost` runtime.
+#
+# Pure-Rust compilation via `protox` — no system `protoc` required.
+[package]
+name = "proto-gen"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+prost-build = "0.14"
+protox = "0.9"

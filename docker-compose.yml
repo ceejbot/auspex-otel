@@ -1,0 +1,21 @@
+# Local Jaeger all-in-one: a trace sink for the auspex example and the
+# OTLP/HTTP exporter smoke test. Start with `just jaeger-up`.
+#
+#   OTLP/HTTP ingest : http://localhost:4318  (auspex posts to /v1/traces)
+#   Jaeger UI        : http://localhost:16686
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: auspex-jaeger
+    environment:
+      # OTLP receiver is on by default in recent Jaeger, but be explicit.
+      - COLLECTOR_OTLP_ENABLED=true
+      # The Zipkin collector is OFF by default; enabling it gives auspex's
+      # Zipkin exporter a sink at :9411/api/v2/spans.
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+    ports:
+      - "16686:16686" # Jaeger UI
+      - "4318:4318" # OTLP/HTTP
+      - "4317:4317" # OTLP/gRPC (unused by auspex v0.1, exposed for convenience)
+      - "9411:9411" # Zipkin v2 JSON ingest (/api/v2/spans)
+    restart: unless-stopped

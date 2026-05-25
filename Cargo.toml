@@ -1,0 +1,129 @@
+[package]
+name = "auspex-otel"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ceejbot/auspex-otel"
+description = "Extremely opinionated, lean, high-performance OTEL tracing middleware for axum"
+keywords = ["opentelemetry", "tracing", "axum", "observability", "otlp"]
+categories = ["web-programming::http-server", "development-tools::debugging", "asynchronous"]
+
+# Dev-only protobuf generator and the .proto sources are not needed to build the
+# crate (the generated Rust is committed under src/exporter/proto/), so keep them
+# out of the published package. Regenerate locally with `just gen-proto`.
+exclude = [
+	".gitignore",
+	".justfile",
+	".rustfmt.toml",
+	".github/",
+	"/proto/",
+	"deny.toml",
+	"docker-compose.yml",
+	"docs/",
+	"tools/",
+]
+
+# Build docs.rs with the `axum` feature so the route-naming items (and the
+# recommended setup) are documented. `compare-otel` is intentionally left off —
+# it would pull the full OpenTelemetry SDK into the docs build for no benefit.
+[package.metadata.docs.rs]
+features = ["axum"]
+
+# Package is published as `auspex-otel` (the bare `auspex` name is taken on
+# crates.io), but the library is imported as `auspex` — consumers write
+# `use auspex::Tracer;`. Package name and lib target name are independent.
+[lib]
+name = "auspex"
+
+# The example needs axum (MatchedPath route naming + the server itself).
+[[example]]
+name = "basic"
+required-features = ["axum"]
+
+# Custom request-path benchmark (Task 7.2). Plain binary, not criterion:
+# `harness = false` so `fn main()` runs under `cargo bench`.
+[[bench]]
+name = "hotpath"
+harness = false
+
+# Allocation comparison vs the full OpenTelemetry SDK stack (dev-only).
+# Gated so the OTEL dependency tree is only ever compiled when explicitly asked
+# for: `cargo bench --bench compare_otel --features compare-otel`.
+[[bench]]
+name = "compare_otel"
+harness = false
+required-features = ["compare-otel"]
+
+[dependencies]
+tower = { version = "0.5", default-features = false }
+http = "1"
+axum = { version = "0.8", optional = true }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "registry"] }
+smallvec = { version = "1.13", features = ["const_generics", "const_new"] }
+getrandom = { version = "0.4.2", features = ["std"] }
+tokio = { version = "1", default-features = false, features = ["sync", "rt", "time", "macros"] }
+pin-project-lite = "0.2"
+url = "2"
+async-trait = "0.1"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "http2"] }
+prost = { version = "0.14", default-features = false, features = ["derive", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Optional: only the `compare_otel` benchmark uses these. Feature-gated rather
+# than dev-dependencies so the OpenTelemetry SDK is never compiled into a normal
+# build — avoiding that tree is the entire point of auspex.
+opentelemetry = { version = "0.32", optional = true }
+opentelemetry_sdk = { version = "0.32", optional = true }
+tracing-opentelemetry = { version = "0.33", optional = true }
+
+[dev-dependencies]
+proptest = "1.5"
+temp-env = "0.3"
+wiremock = "0.6"
+tokio = { version = "1", features = ["macros", "test-util", "rt-multi-thread", "net"] }
+# tracing-subscriber and tracing reappear here with extra features (fmt,
+# attributes) that only the example and tests need — the library does not.
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+tracing = { version = "0.1", features = ["attributes"] }
+
+[features]
+default = []
+axum = ["dep:axum"]
+# Pulls in the OpenTelemetry SDK for benches/compare_otel.rs only.
+compare-otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:tracing-opentelemetry"]
+
+[lints.rust]
+unsafe_code = { level = "deny", priority = 0 }
+future_incompatible = { level = "deny", priority = 1 }
+rust_2018_idioms = { level = "warn", priority = 2 }
+trivial_casts = { level = "warn", priority = 3 }
+trivial_numeric_casts = { level = "warn", priority = 4 }
+unused_lifetimes = { level = "warn", priority = 5 }
+unused_qualifications = { level = "warn", priority = 6 }
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+
+# Allow a few noisy-but-acceptable pedantic/nursery lints for this crate
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+similar_names = "allow"          # TraceId / SpanId is fine
+too_many_lines = "allow"         # Some span construction can be long but clear
+cognitive_complexity = "allow"   # We will measure hot paths instead
+trivially_copy_pass_by_ref = "allow"  # Our newtypes are tiny and Copy; &self is fine for clarity
+
+[profile.release]
+lto = "thin"
+codegen-units = 1 # Single codegen unit for better optimization
+opt-level = 3     # Maximum optimization
+strip = true      # Strip symbols for smaller binary
+panic = "abort"   # Smaller binary, no unwinding

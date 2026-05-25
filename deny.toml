@@ -1,0 +1,44 @@
+# cargo-deny configuration for auspex
+# Run via `just deny` or as part of `just ci`
+
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+
+[advisories]
+ignore = [
+    # Add known false-positive advisories here when they appear
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+deny = [
+    # Prefer the non-deprecated versions of these
+    { name = "openssl" , use-instead = "rustls"},
+    { name = "openssl-sys", use-instead = "rustls" },
+    "libssh2-sys",
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = []
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "ISC",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "CC0-1.0",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0"
+]
+confidence-threshold = 0.9
+unused-allowed-license = "allow"

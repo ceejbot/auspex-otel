@@ -1,0 +1,102 @@
+name: "Tests"
+on:
+    push:
+        branches: ["latest"]
+        paths:
+            - src/**
+            - Cargo.toml
+            - Cargo.lock
+            - .github/workflows/test.yaml
+    pull_request:
+        branches: ["latest"]
+    workflow_dispatch:
+permissions:
+    contents: read
+
+env:
+    CARGO_TERM_COLOR: always
+
+jobs:
+    test:
+        name: test
+        runs-on: ubuntu-latest
+        strategy:
+            matrix:
+                rust: [stable, "1.90"]
+            fail-fast: false
+        env:
+            SCCACHE_GHA_ENABLED: "true"
+            RUSTC_WRAPPER: "sccache"
+        steps:
+            - name: checkout
+              uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+              with:
+                persist-credentials: false
+
+            - name: sccache-cache
+              uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696
+
+            - name: Install Rust toolchain
+              uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6
+              with:
+                  toolchain: ${{ matrix.rust }}
+                  components: clippy
+                  cache-directories: |
+                      ~/.cargo/registry
+                      ~/.cargo/bin
+                      target
+
+            - name: Install cargo-nextest
+              shell: bash
+              run: |
+                  if [[ -z $(which cargo-nextest) ]]; then
+                    curl -sL https://get.nexte.st/latest/linux -o nextest.tgz
+                    tar xfz nextest.tgz
+                    mv cargo-nextest /home/runner/.cargo/bin
+                  fi
+
+            - name: run all tests
+              shell: bash
+              run: |
+                cargo nextest run --workspace --lib --bins --tests --examples --future-incompat-report
+                cargo nextest run --workspace --lib --tests --features axum --future-incompat-report
+
+            - name: Run doctests
+              run: cargo test --doc
+
+            # Lint policy and MSRV compatibility are separate concerns.
+            - name: consult Clippy (strict)
+              if: ${{ matrix.rust == 'stable' }}
+              shell: bash
+              run: |
+                cargo clippy --workspace --all-targets -- -D warnings
+                cargo clippy --workspace --all-targets --features axum -- -D warnings
+
+    deny:
+        name: cargo-deny
+        runs-on: ubuntu-latest
+        steps:
+            - name: checkout
+              uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+              with:
+                persist-credentials: false
+            - name: cargo-deny
+              uses: EmbarkStudios/cargo-deny-action@a531616d8ce3b9177443e48a1159bc945a099823 # v2.0.19
+
+    fmt:
+        name: formatting check
+        runs-on: ubuntu-latest
+        steps:
+            - name: checkout
+              uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+              with:
+                persist-credentials: false
+
+            - name: Install nightly Rust
+              uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6
+              with:
+                  toolchain: nightly
+                  components: rustfmt
+
+            - name: check formatting
+              run: cargo +nightly fmt --check --all
