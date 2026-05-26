@@ -88,6 +88,31 @@ impl TracerBuilder {
         self
     }
 
+    /// Sets extra OTEL Resource attributes (e.g. `service.version`,
+    /// `deployment.environment`) attached to every exported span.
+    ///
+    /// These overlay `OTEL_RESOURCE_ATTRIBUTES`: an attribute given here
+    /// overrides the matching env entry, while env-only entries are kept.
+    /// A `service.name` entry is redirected to the service name (use
+    /// [`with_service_name`](Self::with_service_name) instead).
+    ///
+    /// ```no_run
+    /// let tracer = auspex::Tracer::builder()
+    ///     .with_service_name("checkout-api")
+    ///     .with_resource_attributes([
+    ///         ("service.version", env!("CARGO_PKG_VERSION")),
+    ///         ("deployment.environment", "prod"),
+    ///     ])
+    ///     .build();
+    /// ```
+    pub fn with_resource_attributes(
+        mut self,
+        attributes: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        self.config = self.config.with_resource_attributes(attributes);
+        self
+    }
+
     /// Build a `Tracer` from the accumulated configuration.
     /// Builder setters take precedence over environment variables (and
     /// therefore over the defaults that `from_env` would produce).
@@ -108,6 +133,10 @@ impl TracerBuilder {
         }
         if !self.config.headers.is_empty() {
             base = base.with_headers(self.config.headers.clone());
+        }
+        if !self.config.resource_attributes.is_empty() {
+            // Merges over env-parsed attrs: builder keys win, env-only keys stay.
+            base = base.with_resource_attributes(self.config.resource_attributes.clone());
         }
 
         if let Some(bs) = self.max_batch_size {
@@ -594,6 +623,43 @@ mod tests {
                 assert_eq!(cfg.schedule_delay, std::time::Duration::from_secs(30));
             });
         });
+    }
+
+    #[test]
+    fn builder_resource_attributes_override_env_keys_but_keep_others() {
+        use temp_env::with_var;
+
+        with_var(
+            "OTEL_RESOURCE_ATTRIBUTES",
+            Some("service.version=0.0.1,deployment.environment=dev"),
+            || {
+                let t = TracerBuilder::new()
+                    .with_service_name("svc")
+                    .with_sink_uri("http://ex")
+                    // Override one env key, add a new one; the untouched env key survives.
+                    .with_resource_attributes([("deployment.environment", "prod"), ("region", "us-east-1")])
+                    .build();
+                let attrs = &t.config_for_test().resource_attributes;
+                assert_eq!(
+                    attrs
+                        .iter()
+                        .find(|(k, _)| k == "service.version")
+                        .map(|(_, v)| v.as_str()),
+                    Some("0.0.1") // env-only key preserved
+                );
+                assert_eq!(
+                    attrs
+                        .iter()
+                        .find(|(k, _)| k == "deployment.environment")
+                        .map(|(_, v)| v.as_str()),
+                    Some("prod") // builder overrode the env value
+                );
+                assert_eq!(
+                    attrs.iter().find(|(k, _)| k == "region").map(|(_, v)| v.as_str()),
+                    Some("us-east-1")
+                );
+            },
+        );
     }
 
     // Third named test case (added autonomously).

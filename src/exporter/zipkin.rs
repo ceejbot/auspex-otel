@@ -36,6 +36,9 @@ const DEFAULT_SERVICE_NAME: &str = "unknown_service";
 pub(crate) struct ZipkinExporter {
     poster: HttpPoster,
     service_name: String,
+    /// Extra Resource attributes, emitted as Zipkin tags. `service.name` is
+    /// never among these (it maps to `localEndpoint.serviceName`).
+    resource_attributes: Vec<(String, String)>,
 }
 
 impl ZipkinExporter {
@@ -48,10 +51,12 @@ impl ZipkinExporter {
         endpoint: Url,
         headers: &[(String, String)],
         service_name: Option<String>,
+        resource_attributes: Vec<(String, String)>,
     ) -> Result<Self, ExportError> {
         Ok(Self {
             poster: HttpPoster::try_new(endpoint, JSON_CONTENT_TYPE, headers)?,
             service_name: service_name.unwrap_or_else(|| DEFAULT_SERVICE_NAME.to_owned()),
+            resource_attributes,
         })
     }
 }
@@ -64,7 +69,7 @@ impl Exporter for ZipkinExporter {
         }
         let spans: Vec<ZipkinSpan> = batch
             .iter()
-            .map(|s| ZipkinSpan::from_finished(s, &self.service_name))
+            .map(|s| ZipkinSpan::from_finished(s, &self.service_name, &self.resource_attributes))
             .collect();
         let body =
             serde_json::to_vec(&spans).map_err(|e| ExportError::new(format!("zipkin JSON encode failed: {e}")))?;
@@ -108,12 +113,18 @@ struct Annotation {
 }
 
 impl ZipkinSpan {
-    fn from_finished(s: &FinishedSpan, service_name: &str) -> Self {
-        let mut tags: BTreeMap<String, String> = s
-            .attributes
+    fn from_finished(s: &FinishedSpan, service_name: &str, resource_attributes: &[(String, String)]) -> Self {
+        // Resource attributes seed the tags; span attributes are layered on top
+        // so a per-span value always wins over a process-identity tag.
+        let mut tags: BTreeMap<String, String> = resource_attributes
             .iter()
-            .map(|(k, v)| (k.to_string(), attribute_value_to_string(v)))
+            .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
+        tags.extend(
+            s.attributes
+                .iter()
+                .map(|(k, v)| (k.to_string(), attribute_value_to_string(v))),
+        );
 
         // Zipkin's conventional error signal (Jaeger renders these red).
         if let Status::Error { message } = &s.status {
@@ -212,7 +223,7 @@ mod tests {
     /// The serialized payload is a JSON array of well-formed Zipkin v2 spans.
     #[test]
     fn serialized_payload_is_valid_zipkin_v2_json() {
-        let span = ZipkinSpan::from_finished(&finished("GET /"), "svc");
+        let span = ZipkinSpan::from_finished(&finished("GET /"), "svc", &[]);
         let json = serde_json::to_value([span]).expect("serialize");
 
         let arr = json.as_array().expect("top level is an array");
@@ -238,11 +249,33 @@ mod tests {
         live.record("float", 1.5f64);
         live.record("bool", true);
 
-        let span = ZipkinSpan::from_finished(&live.finish(), "svc");
+        let span = ZipkinSpan::from_finished(&live.finish(), "svc", &[]);
         assert_eq!(span.tags.get("str").map(String::as_str), Some("v"));
         assert_eq!(span.tags.get("int").map(String::as_str), Some("42"));
         assert_eq!(span.tags.get("float").map(String::as_str), Some("1.5"));
         assert_eq!(span.tags.get("bool").map(String::as_str), Some("true"));
+    }
+
+    /// Resource attributes are emitted as tags; `service.name` stays in
+    /// `localEndpoint.serviceName` and is not duplicated into tags.
+    #[test]
+    fn resource_attributes_appear_as_tags_and_service_name_stays_in_endpoint() {
+        let attrs = vec![
+            ("service.version".to_owned(), "0.10.7".to_owned()),
+            ("deployment.environment".to_owned(), "prod".to_owned()),
+        ];
+        let span = ZipkinSpan::from_finished(&finished("GET /"), "checkout-api", &attrs);
+
+        assert_eq!(span.tags.get("service.version").map(String::as_str), Some("0.10.7"));
+        assert_eq!(
+            span.tags.get("deployment.environment").map(String::as_str),
+            Some("prod")
+        );
+        assert_eq!(span.local_endpoint.service_name, "checkout-api");
+        assert!(
+            !span.tags.contains_key("service.name"),
+            "service.name must not be a tag"
+        );
     }
 
     /// `SpanKind::Server` maps to Zipkin `SERVER`; internal omits `kind`.
@@ -250,10 +283,13 @@ mod tests {
     fn span_kind_server_is_mapped_to_zipkin_server_kind() {
         let mut live = OtelSpan::new(TraceId::generate(), SpanId::generate(), None, "s");
         live.kind = SpanKind::Server;
-        assert_eq!(ZipkinSpan::from_finished(&live.finish(), "svc").kind, Some("SERVER"));
+        assert_eq!(
+            ZipkinSpan::from_finished(&live.finish(), "svc", &[]).kind,
+            Some("SERVER")
+        );
 
         let internal = finished("s"); // default kind is Internal
-        assert_eq!(ZipkinSpan::from_finished(&internal, "svc").kind, None);
+        assert_eq!(ZipkinSpan::from_finished(&internal, "svc", &[]).kind, None);
     }
 
     /// The sampled flag is preserved (as an `otel.sampled` tag).
@@ -262,7 +298,7 @@ mod tests {
         for sampled in [true, false] {
             let mut live = OtelSpan::new(TraceId::generate(), SpanId::generate(), None, "s");
             live.is_sampled = sampled;
-            let span = ZipkinSpan::from_finished(&live.finish(), "svc");
+            let span = ZipkinSpan::from_finished(&live.finish(), "svc", &[]);
             assert_eq!(
                 span.tags.get("otel.sampled").map(String::as_str),
                 Some(sampled.to_string().as_str())
@@ -282,7 +318,7 @@ mod tests {
             attributes: smallvec::SmallVec::new(),
         });
 
-        let span = ZipkinSpan::from_finished(&live.finish(), "svc");
+        let span = ZipkinSpan::from_finished(&live.finish(), "svc", &[]);
         let expected = format!("link:{linked_trace}/{linked_span}");
         assert!(
             span.annotations.iter().any(|a| a.value == expected),
@@ -296,7 +332,7 @@ mod tests {
     fn error_status_becomes_zipkin_error_tag() {
         let mut live = OtelSpan::new(TraceId::generate(), SpanId::generate(), None, "s");
         live.status = Status::Error { message: "boom".into() };
-        let span = ZipkinSpan::from_finished(&live.finish(), "svc");
+        let span = ZipkinSpan::from_finished(&live.finish(), "svc", &[]);
         assert_eq!(span.tags.get("error").map(String::as_str), Some("boom"));
     }
 
@@ -319,7 +355,7 @@ mod tests {
             .await;
 
         let endpoint = Url::parse(&format!("{}/api/v2/spans", server.uri())).expect("url");
-        let exporter = ZipkinExporter::try_new(endpoint, &[], Some("svc".to_owned())).expect("build");
+        let exporter = ZipkinExporter::try_new(endpoint, &[], Some("svc".to_owned()), Vec::new()).expect("build");
 
         let result = exporter.export(vec![finished("GET /")]).await;
         assert!(result.is_ok(), "zipkin export should succeed: {result:?}");

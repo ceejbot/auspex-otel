@@ -106,7 +106,10 @@ let app = axum::Router::new()
 ```
 
 For builder-based setup (overrides win over env vars), use
-`auspex::Tracer::builder()`.
+`auspex::Tracer::builder()`. Resource attributes can be set in code with
+`.with_resource_attributes([...])`, which overrides matching
+`OTEL_RESOURCE_ATTRIBUTES` keys while leaving the rest in place — handy for
+values the app knows at startup, e.g. `("service.version", env!("CARGO_PKG_VERSION"))`.
 
 ## Configuration
 
@@ -116,6 +119,7 @@ extras). It is intentionally narrow:
 | Variable                             | Purpose                                                                                                           |
 | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
 | `OTEL_SERVICE_NAME`                  | `service.name` on exported spans.                                                                                 |
+| `OTEL_RESOURCE_ATTRIBUTES`           | Comma-separated `k=v` Resource attributes (`service.version`, `deployment.environment`, …) added to every span.   |
 | `OTEL_SINK_URI`                      | auspex shorthand for the export endpoint (OTLP or Zipkin — see below).                                            |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`        | Standard OTLP/HTTP base (auspex appends `/v1/traces`).                                                            |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Standard per-signal OTLP endpoint (used as-is).                                                                   |

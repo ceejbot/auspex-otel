@@ -36,6 +36,9 @@ pub(crate) struct OtlpHttpExporter {
     poster: HttpPoster,
     /// `service.name` resource attribute value.
     service_name: String,
+    /// Extra Resource attributes (`service.version`, `deployment.environment`,
+    /// …); `service.name` is never among these.
+    resource_attributes: Vec<(String, String)>,
 }
 
 impl OtlpHttpExporter {
@@ -49,10 +52,12 @@ impl OtlpHttpExporter {
         endpoint: Url,
         headers: &[(String, String)],
         service_name: Option<String>,
+        resource_attributes: Vec<(String, String)>,
     ) -> Result<Self, ExportError> {
         Ok(Self {
             poster: HttpPoster::try_new(endpoint, PROTOBUF_CONTENT_TYPE, headers)?,
             service_name: service_name.unwrap_or_else(|| DEFAULT_SERVICE_NAME.to_owned()),
+            resource_attributes,
         })
     }
 }
@@ -63,7 +68,7 @@ impl Exporter for OtlpHttpExporter {
         if batch.is_empty() {
             return Ok(());
         }
-        let body = build_export_request(&batch, &self.service_name).encode_to_vec();
+        let body = build_export_request(&batch, &self.service_name, &self.resource_attributes).encode_to_vec();
         self.poster.post_with_retry(body).await
     }
 }
@@ -192,17 +197,29 @@ fn finished_span_to_proto(s: &FinishedSpan) -> trace_v1::Span {
     }
 }
 
-fn build_export_request(batch: &[FinishedSpan], service_name: &str) -> ExportTraceServiceRequest {
+fn build_export_request(
+    batch: &[FinishedSpan],
+    service_name: &str,
+    resource_attributes: &[(String, String)],
+) -> ExportTraceServiceRequest {
     let spans: Vec<trace_v1::Span> = batch.iter().map(finished_span_to_proto).collect();
 
+    // service.name first, then the configured Resource attributes (which never
+    // include service.name — it is stripped upstream in Config).
+    let mut attributes = Vec::with_capacity(1 + resource_attributes.len());
+    attributes.push(KeyValue {
+        key: "service.name".to_owned(),
+        value: Some(AnyValue {
+            value: Some(any_value::Value::StringValue(service_name.to_owned())),
+        }),
+        ..Default::default()
+    });
+    for (k, v) in resource_attributes {
+        attributes.push(to_key_value(k, &AttributeValue::String(v.clone().into())));
+    }
+
     let resource = Resource {
-        attributes: vec![KeyValue {
-            key: "service.name".to_owned(),
-            value: Some(AnyValue {
-                value: Some(any_value::Value::StringValue(service_name.to_owned())),
-            }),
-            ..Default::default()
-        }],
+        attributes,
         dropped_attributes_count: 0,
         ..Default::default()
     };
@@ -244,7 +261,7 @@ mod tests {
     #[test]
     fn payload_includes_required_resource_attributes() {
         let span = OtelSpan::new(TraceId::generate(), SpanId::generate(), None, "s");
-        let req = build_export_request(&[span.finish()], "checkout-api");
+        let req = build_export_request(&[span.finish()], "checkout-api", &[]);
         let decoded = ExportTraceServiceRequest::decode(req.encode_to_vec().as_slice()).expect("roundtrip decode");
 
         let resource = decoded.resource_spans[0].resource.as_ref().expect("resource present");
@@ -260,6 +277,41 @@ mod tests {
         );
     }
 
+    /// Configured Resource attributes ride alongside `service.name`, as typed
+    /// `StringValue`s, with exactly one `service.name` key.
+    #[test]
+    fn payload_includes_configured_resource_attributes() {
+        let span = OtelSpan::new(TraceId::generate(), SpanId::generate(), None, "s");
+        let attrs = vec![
+            ("service.version".to_owned(), "0.10.7".to_owned()),
+            ("deployment.environment".to_owned(), "prod".to_owned()),
+        ];
+        let req = build_export_request(&[span.finish()], "checkout-api", &attrs);
+        let decoded = ExportTraceServiceRequest::decode(req.encode_to_vec().as_slice()).expect("roundtrip decode");
+        let resource = decoded.resource_spans[0].resource.as_ref().expect("resource present");
+
+        let string_attr = |key: &str| -> Option<String> {
+            resource
+                .attributes
+                .iter()
+                .find(|kv| kv.key == key)
+                .and_then(|kv| kv.value.as_ref())
+                .and_then(|v| v.value.as_ref())
+                .and_then(|v| match v {
+                    any_value::Value::StringValue(s) => Some(s.clone()),
+                    _ => None,
+                })
+        };
+
+        assert_eq!(string_attr("service.version").as_deref(), Some("0.10.7"));
+        assert_eq!(string_attr("deployment.environment").as_deref(), Some("prod"));
+        // Exactly one service.name key — no duplication from the attribute list.
+        assert_eq!(
+            resource.attributes.iter().filter(|kv| kv.key == "service.name").count(),
+            1
+        );
+    }
+
     /// A configured OTLP header is applied (alongside the required
     /// content-type).
     #[test]
@@ -268,6 +320,7 @@ mod tests {
             Url::parse("http://localhost:4318/v1/traces").expect("url"),
             &[("x-api-key".to_owned(), "secret".to_owned())],
             Some("svc".to_owned()),
+            Vec::new(),
         )
         .expect("exporter builds");
 
@@ -286,6 +339,7 @@ mod tests {
             Url::parse("http://localhost:4318/v1/traces").expect("url"),
             &[("bad header".to_owned(), "v".to_owned())],
             None,
+            Vec::new(),
         );
         assert!(result.is_err(), "a header name with a space is not valid HTTP");
     }
@@ -314,7 +368,7 @@ mod tests {
         });
 
         let finished = span.finish();
-        let req = build_export_request(&[finished], "svc");
+        let req = build_export_request(&[finished], "svc", &[]);
         let bytes = req.encode_to_vec();
 
         let decoded = ExportTraceServiceRequest::decode(bytes.as_slice())
@@ -344,7 +398,7 @@ mod tests {
         for sampled in [true, false] {
             let mut span = OtelSpan::new(TraceId::generate(), SpanId::generate(), None, "s");
             span.is_sampled = sampled;
-            let req = build_export_request(&[span.finish()], "svc");
+            let req = build_export_request(&[span.finish()], "svc", &[]);
             let decoded = ExportTraceServiceRequest::decode(req.encode_to_vec().as_slice()).expect("roundtrip decode");
             let flags = decoded.resource_spans[0].scope_spans[0].spans[0].flags;
             let sampled_bit = flags & u32::from(TraceFlags::SAMPLED) != 0;
@@ -359,7 +413,7 @@ mod tests {
         span.trace_state = crate::propagation::TraceState::from_header("vendor=abc123");
         assert!(span.trace_state.is_some(), "test fixture should be a valid tracestate");
 
-        let req = build_export_request(&[span.finish()], "svc");
+        let req = build_export_request(&[span.finish()], "svc", &[]);
         let decoded = ExportTraceServiceRequest::decode(req.encode_to_vec().as_slice()).expect("roundtrip decode");
         assert_eq!(
             decoded.resource_spans[0].scope_spans[0].spans[0].trace_state,
@@ -375,7 +429,7 @@ mod tests {
         span.dropped_events_count = 5;
         span.dropped_links_count = 7;
 
-        let req = build_export_request(&[span.finish()], "svc");
+        let req = build_export_request(&[span.finish()], "svc", &[]);
         let decoded = ExportTraceServiceRequest::decode(req.encode_to_vec().as_slice()).expect("roundtrip decode");
         let span = &decoded.resource_spans[0].scope_spans[0].spans[0];
         assert_eq!(span.dropped_attributes_count, 3);
@@ -394,7 +448,7 @@ mod tests {
 
     fn exporter_for(server: &MockServer, headers: &[(String, String)]) -> OtlpHttpExporter {
         let endpoint = Url::parse(&format!("{}/v1/traces", server.uri())).expect("endpoint url");
-        OtlpHttpExporter::try_new(endpoint, headers, Some("svc".to_owned())).expect("exporter builds")
+        OtlpHttpExporter::try_new(endpoint, headers, Some("svc".to_owned()), Vec::new()).expect("exporter builds")
     }
 
     /// A transient 500 is retried, and the export ultimately succeeds.

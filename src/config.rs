@@ -59,8 +59,13 @@ pub struct Config {
     /// Comma-separated header prefixes to capture as attributes
     /// (via `AUSPEX_CAPTURE_HEADERS_PREFIX`).
     pub capture_header_prefixes: Vec<String>,
-    // Future fields (Phase 4+): resource attrs overrides, sampling, etc.
-    // Keep the surface small for v0.1.
+
+    /// Extra OTEL Resource attributes attached to every exported span
+    /// (from `OTEL_RESOURCE_ATTRIBUTES` and/or the builder). These are
+    /// per-process identity — `service.version`, `deployment.environment`,
+    /// `service.commit_hash`, etc. `service.name` is never stored here; it
+    /// lives in the dedicated `service_name` field.
+    pub resource_attributes: Vec<(String, String)>,
 }
 
 /// Typed representation of a resolved exporter endpoint.
@@ -148,6 +153,13 @@ pub fn resolve_endpoint(raw: &str) -> Result<Endpoint, ConfigError> {
 /// Malformed individual pairs are skipped (with a debug log).
 /// This matches the Validate requirement for Task 4.1.
 pub fn parse_headers(raw: &str) -> Vec<(String, String)> {
+    parse_kv_pairs(raw, "OTLP header")
+}
+
+/// Parse a `key=value,key=value` list, trimming whitespace and skipping any
+/// malformed or empty entries. `what` labels the entry kind in debug logs
+/// (shared by OTLP headers and `OTEL_RESOURCE_ATTRIBUTES`).
+fn parse_kv_pairs(raw: &str, what: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for pair in raw.split(',') {
         let pair = pair.trim();
@@ -160,10 +172,10 @@ pub fn parse_headers(raw: &str) -> Vec<(String, String)> {
             if !k.is_empty() && !v.is_empty() {
                 out.push((k.to_string(), v.to_string()));
             } else {
-                tracing::debug!("skipping malformed OTLP header pair (empty key or value): {pair}");
+                tracing::debug!("skipping malformed {what} pair (empty key or value): {pair}");
             }
         } else {
-            tracing::debug!("skipping malformed OTLP header pair (no '='): {pair}");
+            tracing::debug!("skipping malformed {what} pair (no '='): {pair}");
         }
     }
     out
@@ -181,6 +193,7 @@ impl Default for Config {
             max_export_batch_size: 512,
             schedule_delay: Duration::from_secs(5),
             capture_header_prefixes: Vec::new(),
+            resource_attributes: Vec::new(),
         }
     }
 }
@@ -296,6 +309,14 @@ impl Config {
                 .collect();
         }
 
+        // Parsed after OTEL_SERVICE_NAME so an explicit service name wins over a
+        // `service.name` carried in OTEL_RESOURCE_ATTRIBUTES (see the setter).
+        if let Ok(attrs) = env::var("OTEL_RESOURCE_ATTRIBUTES")
+            && !attrs.trim().is_empty()
+        {
+            c = c.with_resource_attributes(parse_kv_pairs(&attrs, "resource attribute"));
+        }
+
         // Whether this is usable for export is decided by the Tracer
         // constructors (real export also requires a service_name).
         c
@@ -365,6 +386,39 @@ impl Config {
     /// Builder-style setter for OTLP exporter headers.
     pub fn with_headers(mut self, headers: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>) -> Self {
         self.headers = headers.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
+        self
+    }
+
+    /// Builder-style setter for extra OTEL Resource attributes.
+    ///
+    /// Merges the given attributes into the existing set: an entry whose key
+    /// already exists is overwritten, others are appended. This lets builder
+    /// values win over `OTEL_RESOURCE_ATTRIBUTES` while leaving non-conflicting
+    /// env entries in place.
+    ///
+    /// A `service.name` entry is special-cased: it is never stored as a
+    /// resource attribute (it has its own field). It promotes to `service_name`
+    /// only when that field is unset, so an explicit service name (e.g.
+    /// `OTEL_SERVICE_NAME`) always wins.
+    pub fn with_resource_attributes(
+        mut self,
+        attributes: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        for (k, v) in attributes {
+            let k = k.into();
+            let v = v.into();
+            if k == "service.name" {
+                if self.service_name.is_none() && !v.trim().is_empty() {
+                    self.service_name = Some(v.trim().to_string());
+                }
+                continue;
+            }
+            if let Some(existing) = self.resource_attributes.iter_mut().find(|(ek, _)| *ek == k) {
+                existing.1 = v;
+            } else {
+                self.resource_attributes.push((k, v));
+            }
+        }
         self
     }
 }
@@ -679,5 +733,105 @@ mod tests {
             let c = Config::from_env();
             assert!(!c.capture_header_prefixes.is_empty());
         });
+    }
+
+    #[test]
+    fn with_resource_attributes_merges_and_overrides_by_key() {
+        let c = Config::default()
+            .with_resource_attributes([("service.version", "1.0.0"), ("deployment.environment", "dev")])
+            .with_resource_attributes([("deployment.environment", "prod"), ("region", "us-east-1")]);
+        // Overridden key keeps a single entry with the new value; others survive.
+        assert_eq!(
+            c.resource_attributes,
+            vec![
+                ("service.version".to_string(), "1.0.0".to_string()),
+                ("deployment.environment".to_string(), "prod".to_string()),
+                ("region".to_string(), "us-east-1".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn resource_attributes_never_store_service_name() {
+        // service.name promotes to the dedicated field (when unset) and is never
+        // kept among the resource attributes.
+        let c = Config::default().with_resource_attributes([("service.name", "promoted"), ("service.version", "9")]);
+        assert_eq!(c.service_name.as_deref(), Some("promoted"));
+        assert_eq!(
+            c.resource_attributes,
+            vec![("service.version".to_string(), "9".to_string())]
+        );
+    }
+
+    #[test]
+    fn explicit_service_name_wins_over_resource_attribute() {
+        let c = Config::default()
+            .with_service_name("explicit")
+            .with_resource_attributes([("service.name", "from-attrs")]);
+        assert_eq!(c.service_name.as_deref(), Some("explicit"));
+        assert!(c.resource_attributes.is_empty());
+    }
+
+    #[test]
+    fn from_env_parses_resource_attributes() {
+        temp_env::with_var(
+            "OTEL_RESOURCE_ATTRIBUTES",
+            Some("service.version=0.10.7, deployment.environment=prod , bogus, =noKey, noValue="),
+            || {
+                let c = Config::from_env();
+                // Well-formed pairs kept (trimmed); malformed/empty entries skipped.
+                assert_eq!(
+                    c.resource_attributes,
+                    vec![
+                        ("service.version".to_string(), "0.10.7".to_string()),
+                        ("deployment.environment".to_string(), "prod".to_string()),
+                    ]
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn from_env_resource_attributes_unset_means_empty() {
+        temp_env::with_var("OTEL_RESOURCE_ATTRIBUTES", None::<&str>, || {
+            let c = Config::from_env();
+            assert!(c.resource_attributes.is_empty());
+        });
+    }
+
+    #[test]
+    fn otel_service_name_wins_over_service_name_in_resource_attributes() {
+        temp_env::with_vars(
+            [
+                ("OTEL_SERVICE_NAME", Some("explicit-svc")),
+                (
+                    "OTEL_RESOURCE_ATTRIBUTES",
+                    Some("service.name=from-attrs,service.version=2"),
+                ),
+            ],
+            || {
+                let c = Config::from_env();
+                assert_eq!(c.service_name.as_deref(), Some("explicit-svc"));
+                assert_eq!(
+                    c.resource_attributes,
+                    vec![("service.version".to_string(), "2".to_string())]
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn service_name_promoted_from_resource_attributes_when_otel_service_name_absent() {
+        temp_env::with_vars(
+            [
+                ("OTEL_SERVICE_NAME", None),
+                ("OTEL_RESOURCE_ATTRIBUTES", Some("service.name=promoted-svc")),
+            ],
+            || {
+                let c = Config::from_env();
+                assert_eq!(c.service_name.as_deref(), Some("promoted-svc"));
+                assert!(c.resource_attributes.is_empty());
+            },
+        );
     }
 }

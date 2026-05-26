@@ -236,7 +236,12 @@ impl Pipeline {
 fn build_exporter(config: &Config) -> Option<Arc<dyn Exporter>> {
     match (&config.exporter, config.endpoint.as_ref()) {
         (ExporterKind::Otlp, Some(Endpoint::OtlpHttp(url))) => {
-            match OtlpHttpExporter::try_new(url.clone(), &config.headers, config.service_name.clone()) {
+            match OtlpHttpExporter::try_new(
+                url.clone(),
+                &config.headers,
+                config.service_name.clone(),
+                config.resource_attributes.clone(),
+            ) {
                 Ok(exporter) => Some(Arc::new(exporter)),
                 Err(err) => {
                     tracing::warn!(
@@ -249,7 +254,12 @@ fn build_exporter(config: &Config) -> Option<Arc<dyn Exporter>> {
             }
         }
         (ExporterKind::Zipkin, Some(Endpoint::Zipkin(url))) => {
-            match ZipkinExporter::try_new(url.clone(), &config.headers, config.service_name.clone()) {
+            match ZipkinExporter::try_new(
+                url.clone(),
+                &config.headers,
+                config.service_name.clone(),
+                config.resource_attributes.clone(),
+            ) {
                 Ok(exporter) => Some(Arc::new(exporter)),
                 Err(err) => {
                     tracing::warn!(
