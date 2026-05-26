@@ -23,6 +23,10 @@
 //! This uses the **explicit subscriber path** (auspex's layer for export plus a
 //! `fmt` layer for console output) so you can see what is happening locally.
 //! The one-liner `auspex::init()` path works too — see the crate docs.
+//!
+//! On Ctrl-C the server stops accepting connections and then
+//! `tracer.shutdown()` drains any in-flight spans to the collector before the
+//! process exits.
 
 use std::time::Duration;
 
@@ -58,13 +62,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/hello/{name}", get(hello))
         .route("/boom", get(boom))
         // The Tracer is a Tower layer: it creates the per-request root span and
-        // handles W3C trace-context propagation.
-        .layer(tracer);
+        // handles W3C trace-context propagation. Clone so we keep a handle for
+        // shutdown (clones share the same pipeline).
+        .layer(tracer.clone());
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     println!("listening on http://localhost:3000  (traces -> http://localhost:16686)");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+
+    // Server has stopped accepting requests; drain in-flight spans before exit so
+    // a SIGTERM/Ctrl-C does not lose the final traces.
+    if !tracer.shutdown().await {
+        eprintln!("auspex: trace export did not fully drain within the timeout");
+    }
     Ok(())
+}
+
+/// Resolves on Ctrl-C. A real service should also catch SIGTERM (the signal a
+/// container runtime sends on stop); the same `tracer.shutdown()` call applies.
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+    println!("shutdown signal received; draining spans...");
 }
 
 /// Root handler: does a little instrumented child work so the trace has depth.

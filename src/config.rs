@@ -56,6 +56,10 @@ pub struct Config {
     /// Schedule delay between batch exports (default 5s).
     pub schedule_delay: Duration,
 
+    /// Maximum time [`Tracer::shutdown`](crate::Tracer::shutdown) waits for the
+    /// export worker to drain and export buffered spans (default 5s).
+    pub shutdown_timeout: Duration,
+
     /// Comma-separated header prefixes to capture as attributes
     /// (via `AUSPEX_CAPTURE_HEADERS_PREFIX`).
     pub capture_header_prefixes: Vec<String>,
@@ -192,6 +196,7 @@ impl Default for Config {
             disabled: true, // safe default until explicitly configured
             max_export_batch_size: 512,
             schedule_delay: Duration::from_secs(5),
+            shutdown_timeout: Duration::from_secs(5),
             capture_header_prefixes: Vec::new(),
             resource_attributes: Vec::new(),
         }
@@ -296,6 +301,16 @@ impl Config {
                 && ms < 3_600_000
             {
                 c.schedule_delay = Duration::from_millis(ms);
+            }
+        }
+        if let Ok(s) = env::var("OTEL_BSP_EXPORT_TIMEOUT") {
+            // Per the OTEL spec this value is in milliseconds. We reuse it as the
+            // shutdown drain deadline. Same (0, 1h) bound; bad value keeps default.
+            if let Ok(ms) = s.trim().parse::<u64>()
+                && ms > 0
+                && ms < 3_600_000
+            {
+                c.shutdown_timeout = Duration::from_millis(ms);
             }
         }
 
@@ -709,6 +724,23 @@ mod tests {
             let c = Config::from_env();
             // Should fall back to the documented default (5s)
             assert_eq!(c.schedule_delay, Duration::from_secs(5));
+        });
+    }
+
+    #[test]
+    fn bsp_export_timeout_is_parsed_as_milliseconds() {
+        // Per the OTEL spec, OTEL_BSP_EXPORT_TIMEOUT is in milliseconds.
+        temp_env::with_var("OTEL_BSP_EXPORT_TIMEOUT", Some("250"), || {
+            let c = Config::from_env();
+            assert_eq!(c.shutdown_timeout, Duration::from_millis(250));
+        });
+    }
+
+    #[test]
+    fn bsp_export_timeout_bad_value_falls_back_to_default() {
+        temp_env::with_var("OTEL_BSP_EXPORT_TIMEOUT", Some("nope"), || {
+            let c = Config::from_env();
+            assert_eq!(c.shutdown_timeout, Duration::from_secs(5));
         });
     }
 

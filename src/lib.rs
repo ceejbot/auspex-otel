@@ -33,6 +33,26 @@
 //!     .route("/", get(handler))
 //!     .layer(tracer);
 //! ```
+//!
+//! ## Graceful shutdown
+//!
+//! Export is batched on a background worker. On shutdown, call
+//! [`Tracer::shutdown`] so buffered, in-flight spans are drained and exported
+//! before the process exits (otherwise a SIGTERM can drop them). It returns
+//! `true` when everything flushed within the timeout
+//! (`OTEL_BSP_EXPORT_TIMEOUT` / [`TracerBuilder::with_shutdown_timeout`],
+//! default 5s).
+//!
+//! ```rust,ignore
+//! let tracer = auspex::init()?;
+//! let app = axum::Router::new().route("/", get(handler)).layer(tracer.clone());
+//!
+//! axum::serve(listener, app)
+//!     .with_graceful_shutdown(async { tokio::signal::ctrl_c().await.ok(); })
+//!     .await?;
+//!
+//! tracer.shutdown().await; // drain + export before exit
+//! ```
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]

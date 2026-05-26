@@ -111,6 +111,32 @@ For builder-based setup (overrides win over env vars), use
 `OTEL_RESOURCE_ATTRIBUTES` keys while leaving the rest in place — handy for
 values the app knows at startup, e.g. `("service.version", env!("CARGO_PKG_VERSION"))`.
 
+## Graceful shutdown
+
+Spans are exported on a background worker. On shutdown, await `tracer.shutdown()`
+so buffered, in-flight spans are drained and exported before the process exits —
+otherwise a SIGTERM can drop the final traces. Keep a clone of the tracer (clones
+share one pipeline), wire it to your server's graceful-shutdown future, and call
+`shutdown()` once serving stops:
+
+```rust
+let app = axum::Router::new()
+    .route("/", axum::routing::get(handler))
+    .layer(tracer.clone());
+
+axum::serve(listener, app)
+    .with_graceful_shutdown(async { tokio::signal::ctrl_c().await.ok(); })
+    .await?;
+
+// Drain + export before exit. Returns `false` if the timeout elapsed first.
+tracer.shutdown().await;
+```
+
+The drain deadline defaults to 5s; override it with `OTEL_BSP_EXPORT_TIMEOUT`
+(milliseconds) or `Tracer::builder().with_shutdown_timeout(...)`. `shutdown()` is
+idempotent and a no-op on a disabled tracer. Dropping the tracer without calling
+`shutdown()` still triggers a best-effort drain, but nothing waits for it.
+
 ## Configuration
 
 auspex reads standard OTEL environment variables (plus a couple of `AUSPEX_`
@@ -127,6 +153,7 @@ extras). It is intentionally narrow:
 | `OTEL_TRACES_EXPORTER=none`          | Force disabled mode.                                                                                              |
 | `OTEL_BSP_MAX_EXPORT_BATCH_SIZE`     | Max spans per export batch (default 512).                                                                         |
 | `OTEL_BSP_SCHEDULE_DELAY`            | Batch flush interval, in **milliseconds** (default 5000).                                                         |
+| `OTEL_BSP_EXPORT_TIMEOUT`            | Max time `tracer.shutdown()` waits for the drain, in **milliseconds** (default 5000).                            |
 | `AUSPEX_CAPTURE_HEADERS_PREFIX`      | Comma-separated response-header name prefixes to capture as attributes (a sensitive-header denylist always wins). |
 
 If exporting is disabled, misconfigured, or set to `none`, the middleware passes

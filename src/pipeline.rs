@@ -8,17 +8,33 @@
 //! spans are dropped and counted when the channel is full. The receiver side
 //! will be drained by a background worker task in later phases.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(test)]
 use std::sync::mpsc::{self as mpsc, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 
-use tokio::sync::mpsc as tokio_mpsc;
+use tokio::sync::{mpsc as tokio_mpsc, oneshot};
+use tokio::task::JoinHandle;
 
 use crate::config::{Config, Endpoint, ExporterKind};
 use crate::exporter::{BatchWorker, Exporter, OtlpHttpExporter, ZipkinExporter};
 // Re-export the real type from span.rs now that it is defined (Task 2.1).
 pub use crate::span::FinishedSpan;
+
+/// Shutdown coordination, populated only when an exporter worker was spawned.
+///
+/// Held behind a `Mutex` that is touched *only* by [`Pipeline::shutdown`], so
+/// the hot-path `sender` stays lock-free. `take`-ing the state makes shutdown
+/// idempotent.
+#[derive(Debug)]
+struct ShutdownState {
+    /// Signals the worker to stop accepting spans and drain. Dropping it (full
+    /// pipeline drop) triggers the same drain via the receiver erroring.
+    signal: oneshot::Sender<()>,
+    /// The spawned worker task; awaited (with a timeout) so callers can wait
+    /// for the final export to complete.
+    worker: JoinHandle<()>,
+}
 
 /// The shared pipeline state.
 ///
@@ -35,6 +51,10 @@ pub struct Pipeline {
     /// drains any buffered spans and exits (flush-on-drop).
     sender: Option<tokio_mpsc::Sender<FinishedSpan>>,
 
+    /// Shutdown coordination (`Some` only when a worker was actually spawned).
+    /// Touched only by `shutdown()`, never on the hot path.
+    shutdown: Mutex<Option<ShutdownState>>,
+
     // For Task 3.2 test support (separate std mpsc so plain #[test] can recv easily)
     #[cfg(test)]
     test_sender: Option<Sender<FinishedSpan>>,
@@ -49,14 +69,20 @@ impl Pipeline {
     /// **Runtime requirement:** to actually export, this must be called from
     /// within a Tokio runtime (the normal `#[tokio::main]` axum case). When no
     /// runtime is present at construction the pipeline still builds, but no
-    /// worker is spawned and produced spans are dropped-and-counted. The worker
-    /// drains and exits when this pipeline (and thus the sender) is dropped.
+    /// worker is spawned and produced spans are dropped-and-counted.
+    ///
+    /// **Shutdown:** prefer the deterministic [`Pipeline::shutdown`] (exposed
+    /// as `Tracer::shutdown`), which signals the worker to drain and awaits
+    /// the final export. Dropping the pipeline remains a best-effort
+    /// fallback: the channel closes and the detached worker drains, but
+    /// nothing waits for it.
     pub(crate) fn from_config(config: Config) -> Arc<Self> {
         if !config.is_enabled() {
             return Arc::new(Self {
                 config,
                 drop_count: AtomicUsize::new(0),
                 sender: None,
+                shutdown: Mutex::new(None),
                 #[cfg(test)]
                 test_sender: None,
             });
@@ -66,38 +92,81 @@ impl Pipeline {
         // buffering under burst without unbounded memory growth.
         let (tx, rx) = tokio_mpsc::channel::<FinishedSpan>(2048);
 
-        match build_exporter(&config) {
-            Some(exporter) => match tokio::runtime::Handle::try_current() {
-                Ok(handle) => {
-                    let worker = BatchWorker::new(rx, exporter, config.max_export_batch_size, config.schedule_delay);
-                    // Detached: dropping the JoinHandle does not cancel the task;
-                    // it runs until the channel closes, then drains and exits.
-                    handle.spawn(worker.run());
-                }
-                Err(_) => {
-                    // `rx` drops here, closing the channel; sends will count as
-                    // drops. Surfaced once so misconfiguration is visible.
-                    tracing::debug!(
-                        target: "auspex::exporter",
-                        "no Tokio runtime at pipeline construction; exporter worker not started (spans will be dropped)"
-                    );
-                }
-            },
-            None => {
-                tracing::warn!(
-                    target: "auspex::exporter",
-                    "no usable exporter for the resolved config; export disabled (spans will be dropped)"
+        let shutdown = if let Some(exporter) = build_exporter(&config) {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let (signal, shutdown_rx) = oneshot::channel();
+                let worker = BatchWorker::new(
+                    rx,
+                    exporter,
+                    config.max_export_batch_size,
+                    config.schedule_delay,
+                    shutdown_rx,
                 );
+                // The worker drains on an explicit `shutdown()` signal, or when the
+                // channel closes on full drop. Keep its handle so `shutdown()` can
+                // await the final export.
+                let worker = handle.spawn(worker.run());
+                Some(ShutdownState { signal, worker })
+            } else {
+                // `rx` drops at function end, closing the channel; sends will count
+                // as drops. Surfaced once so misconfiguration is visible.
+                tracing::debug!(
+                    target: "auspex::exporter",
+                    "no Tokio runtime at pipeline construction; exporter worker not started (spans will be dropped)"
+                );
+                None
             }
-        }
+        } else {
+            tracing::warn!(
+                target: "auspex::exporter",
+                "no usable exporter for the resolved config; export disabled (spans will be dropped)"
+            );
+            None
+        };
 
         Arc::new(Self {
             config,
             drop_count: AtomicUsize::new(0),
             sender: Some(tx),
+            shutdown: Mutex::new(shutdown),
             #[cfg(test)]
             test_sender: None,
         })
+    }
+
+    /// Drain and export buffered spans, then wait for the worker to finish.
+    ///
+    /// Returns `true` if everything flushed within `config.shutdown_timeout`;
+    /// `false` if the deadline elapsed or the worker had panicked. Idempotent
+    /// (the shutdown state is taken on first call); a no-op returning `true`
+    /// when no worker was spawned (disabled, or no runtime at construction).
+    pub(crate) async fn shutdown(&self) -> bool {
+        let state = self
+            .shutdown
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let Some(ShutdownState { signal, worker }) = state else {
+            return true;
+        };
+
+        // Err means the worker already exited; the drop path will have drained.
+        let _ = signal.send(());
+
+        match tokio::time::timeout(self.config.shutdown_timeout, worker).await {
+            Ok(Ok(())) => true,
+            Ok(Err(_join_err)) => {
+                tracing::warn!(target: "auspex::exporter", "export worker panicked during shutdown");
+                false
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    target: "auspex::exporter",
+                    "shutdown drain exceeded shutdown_timeout; some spans may not have been exported"
+                );
+                false
+            }
+        }
     }
 
     /// Test helper: create a pipeline + receiver for inspecting sent
@@ -110,6 +179,7 @@ impl Pipeline {
             config,
             drop_count: AtomicUsize::new(0),
             sender: None,
+            shutdown: Mutex::new(None),
             test_sender: Some(tx),
         });
         (pipeline, rx)
@@ -135,6 +205,7 @@ impl Pipeline {
             config,
             drop_count: AtomicUsize::new(0),
             sender: Some(tx),
+            shutdown: Mutex::new(None),
             #[cfg(test)]
             test_sender: None,
         });
@@ -187,42 +258,38 @@ impl Pipeline {
     }
 
     /// Test helper: create a production-style pipeline that immediately spawns
-    /// a `BatchWorker` using the provided exporter. This is the foundation for
-    /// the real end-to-end named tests in Task 6.1.
+    /// a `BatchWorker` using the provided exporter, with the shutdown state
+    /// wired up so tests can drive `pipeline.shutdown()` directly.
     #[cfg(test)]
-    pub(crate) fn new_for_test_with_exporter(
-        config: Config,
-        exporter: Arc<dyn Exporter>,
-    ) -> (Arc<Self>, tokio::task::JoinHandle<()>) {
-        let (tx, rx) = if config.is_enabled() {
-            tokio::sync::mpsc::channel::<FinishedSpan>(2048)
-        } else {
-            // For disabled case we still return a no-op pipeline + a dummy task
-            let (_tx, _rx) = tokio::sync::mpsc::channel::<FinishedSpan>(1);
-            let pipeline = Arc::new(Self {
+    pub(crate) fn new_for_test_with_exporter(config: Config, exporter: Arc<dyn Exporter>) -> Arc<Self> {
+        if !config.is_enabled() {
+            return Arc::new(Self {
                 config,
                 drop_count: AtomicUsize::new(0),
                 sender: None,
-                #[cfg(test)]
+                shutdown: Mutex::new(None),
                 test_sender: None,
             });
-            let handle = tokio::spawn(async {});
-            return (pipeline, handle);
-        };
+        }
 
-        let pipeline = Arc::new(Self {
-            config: config.clone(),
+        let (tx, rx) = tokio_mpsc::channel::<FinishedSpan>(2048);
+        let (signal, shutdown_rx) = oneshot::channel();
+        let worker = BatchWorker::new(
+            rx,
+            exporter,
+            config.max_export_batch_size,
+            config.schedule_delay,
+            shutdown_rx,
+        );
+        let worker = tokio::spawn(worker.run());
+
+        Arc::new(Self {
+            config,
             drop_count: AtomicUsize::new(0),
             sender: Some(tx),
-            #[cfg(test)]
+            shutdown: Mutex::new(Some(ShutdownState { signal, worker })),
             test_sender: None,
-        });
-
-        let worker = BatchWorker::new(rx, exporter, config.max_export_batch_size, config.schedule_delay);
-
-        let handle = tokio::spawn(worker.run());
-
-        (pipeline, handle)
+        })
     }
 }
 
@@ -281,7 +348,6 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[allow(clippy::used_underscore_binding)]
     async fn end_to_end_finished_span_reaches_test_exporter() {
         use crate::context::{SpanId, TraceId};
         // TestExporter is qualified below to avoid unused import warnings in non-test builds.
@@ -293,7 +359,7 @@ mod tests {
 
         let test_exporter = Arc::new(crate::exporter::TestExporter::new());
 
-        let (pipeline, _worker_handle) = Pipeline::new_for_test_with_exporter(config, test_exporter.clone());
+        let pipeline = Pipeline::new_for_test_with_exporter(config, test_exporter.clone());
 
         // Create and "finish" a real span the normal way
         let live = OtelSpan::new(TraceId::generate(), SpanId::generate(), None, "e2e-span");
@@ -302,12 +368,11 @@ mod tests {
         // Send it through the normal hot path
         pipeline.send(finished);
 
-        // Drop the pipeline (and thus the sender). This triggers the worker's
-        // shutdown drain path, which should deliver the span to the exporter.
-        drop(pipeline);
-
-        // Wait for the worker to finish draining and exit.
-        _worker_handle.await.expect("worker task should not panic");
+        // Explicit shutdown drains and exports synchronously, then returns.
+        assert!(
+            pipeline.shutdown().await,
+            "shutdown should drain cleanly within the timeout"
+        );
 
         let batches = test_exporter.exported_batches();
         assert!(
@@ -317,8 +382,66 @@ mod tests {
         assert!(!batches[0].is_empty());
     }
 
+    /// `shutdown()` is idempotent: a second call is a harmless no-op that still
+    /// reports a clean result.
+    #[tokio::test]
+    async fn shutdown_is_idempotent() {
+        use crate::context::{SpanId, TraceId};
+        use crate::span::OtelSpan;
+
+        let config = Config::default()
+            .with_service_name("idem")
+            .with_sink_uri("http://example.com");
+        let test_exporter = Arc::new(crate::exporter::TestExporter::new());
+        let pipeline = Pipeline::new_for_test_with_exporter(config, test_exporter);
+
+        pipeline.send(OtelSpan::new(TraceId::generate(), SpanId::generate(), None, "s").finish());
+
+        assert!(pipeline.shutdown().await, "first shutdown drains cleanly");
+        assert!(pipeline.shutdown().await, "second shutdown is a no-op returning true");
+    }
+
+    /// `shutdown()` on a disabled pipeline returns immediately (no worker to
+    /// await, no hang).
+    #[tokio::test]
+    async fn shutdown_on_disabled_pipeline_returns_true() {
+        let pipeline = Pipeline::from_config(Config::default());
+        assert!(!pipeline.is_enabled());
+        assert!(
+            pipeline.shutdown().await,
+            "disabled pipeline shutdown is an immediate no-op"
+        );
+    }
+
+    /// When the worker cannot finish exporting within `shutdown_timeout`,
+    /// `shutdown()` reports `false` (deadline hit) rather than blocking
+    /// forever.
+    #[tokio::test]
+    async fn shutdown_times_out_when_export_is_too_slow() {
+        use std::time::Duration;
+
+        use crate::context::{SpanId, TraceId};
+        use crate::span::OtelSpan;
+
+        let mut config = Config::default()
+            .with_service_name("slow")
+            .with_sink_uri("http://example.com");
+        config.shutdown_timeout = Duration::from_millis(50);
+
+        // Exporter that sleeps far longer than the shutdown deadline.
+        let test_exporter = Arc::new(crate::exporter::TestExporter::new().with_delay(Duration::from_secs(30)));
+        let pipeline = Pipeline::new_for_test_with_exporter(config, test_exporter);
+
+        pipeline.send(OtelSpan::new(TraceId::generate(), SpanId::generate(), None, "s").finish());
+
+        assert!(
+            !pipeline.shutdown().await,
+            "shutdown should report false when the drain exceeds shutdown_timeout"
+        );
+    }
+
     /// The production `from_config` path spawns a worker that POSTs spans to
-    /// the resolved OTLP endpoint, and flushes them when the pipeline drops.
+    /// the resolved OTLP endpoint; `shutdown()` drains it deterministically.
     #[tokio::test]
     async fn from_config_spawns_worker_and_exports_to_endpoint() {
         use wiremock::matchers::{method, path};
@@ -344,21 +467,18 @@ mod tests {
         let finished = OtelSpan::new(TraceId::generate(), SpanId::generate(), None, "prod-span").finish();
         pipeline.send(finished);
 
-        // Dropping closes the channel; the worker drains the buffered span and
-        // POSTs it. The worker runs detached, so poll the server briefly.
-        drop(pipeline);
+        // shutdown() closes the channel, drains the buffered span, awaits the
+        // POST, and returns — no polling needed.
+        assert!(
+            pipeline.shutdown().await,
+            "shutdown should drain and export within the timeout"
+        );
 
-        let mut exported = false;
-        for _ in 0..50 {
-            if let Some(reqs) = server.received_requests().await
-                && !reqs.is_empty()
-            {
-                exported = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        assert!(exported, "the spawned worker should POST the span to the endpoint");
+        let reqs = server.received_requests().await.expect("mock server records requests");
+        assert!(
+            !reqs.is_empty(),
+            "the worker should have POSTed the span to the endpoint"
+        );
     }
 
     /// The production path also works for a Zipkin sink: `from_config` builds a
@@ -389,19 +509,17 @@ mod tests {
 
         let finished = OtelSpan::new(TraceId::generate(), SpanId::generate(), None, "zk-span").finish();
         pipeline.send(finished);
-        drop(pipeline);
 
-        let mut exported = false;
-        for _ in 0..50 {
-            if let Some(reqs) = server.received_requests().await
-                && !reqs.is_empty()
-            {
-                exported = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        assert!(exported, "the spawned zipkin worker should POST to /api/v2/spans");
+        assert!(
+            pipeline.shutdown().await,
+            "zipkin shutdown should drain and export within the timeout"
+        );
+
+        let reqs = server.received_requests().await.expect("mock server records requests");
+        assert!(
+            !reqs.is_empty(),
+            "the zipkin worker should have POSTed to /api/v2/spans"
+        );
     }
 
     #[test]

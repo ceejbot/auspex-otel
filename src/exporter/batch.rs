@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::{self, Instant};
 
 use super::Exporter;
@@ -17,6 +17,9 @@ pub struct BatchWorker {
     max_batch: usize,
     schedule_delay: Duration,
     last_error_log: Option<Instant>,
+    /// Resolves when an explicit shutdown is requested (via the signal) or the
+    /// signalling half is dropped (full pipeline drop). Either way, drain.
+    shutdown_rx: oneshot::Receiver<()>,
 }
 
 impl BatchWorker {
@@ -25,6 +28,7 @@ impl BatchWorker {
         exporter: std::sync::Arc<dyn Exporter>,
         max_batch: usize,
         schedule_delay: Duration,
+        shutdown_rx: oneshot::Receiver<()>,
     ) -> Self {
         Self {
             rx,
@@ -32,6 +36,7 @@ impl BatchWorker {
             max_batch,
             schedule_delay,
             last_error_log: None,
+            shutdown_rx,
         }
     }
 
@@ -55,6 +60,13 @@ impl BatchWorker {
             tokio::select! {
                 biased;
 
+                // Explicit shutdown: drain everything buffered, then exit.
+                // Checked first so a shutdown request is honoured promptly.
+                _ = &mut self.shutdown_rx => {
+                    self.drain_and_flush(std::mem::take(&mut batch)).await;
+                    return;
+                }
+
                 maybe_span = self.rx.recv() => {
                     if let Some(span) = maybe_span {
                         let was_empty = batch.is_empty();
@@ -70,10 +82,8 @@ impl BatchWorker {
                             has_pending_batch = false;
                         }
                     } else {
-                        // Sender dropped → final drain
-                        if !batch.is_empty() {
-                            self.flush(std::mem::take(&mut batch)).await;
-                        }
+                        // All senders dropped → drain (close is then a no-op).
+                        self.drain_and_flush(std::mem::take(&mut batch)).await;
                         return;
                     }
                 }
@@ -91,6 +101,23 @@ impl BatchWorker {
                 }
             }
         }
+    }
+
+    /// Final drain on shutdown: stop accepting new spans, then export every
+    /// span already buffered in the channel.
+    ///
+    /// `Receiver::close()` rejects further sends (late spans are dropped, which
+    /// is honest under shutdown) while leaving buffered spans receivable to
+    /// completion — so this is race-free without spinning on `try_recv`.
+    async fn drain_and_flush(&mut self, mut batch: Vec<FinishedSpan>) {
+        self.rx.close();
+        while let Some(span) = self.rx.recv().await {
+            batch.push(span);
+            if batch.len() >= self.max_batch {
+                self.flush(std::mem::take(&mut batch)).await;
+            }
+        }
+        self.flush(batch).await; // no-op if empty
     }
 
     async fn flush(&mut self, batch: Vec<FinishedSpan>) {

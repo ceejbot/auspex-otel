@@ -37,6 +37,7 @@ pub struct TracerBuilder {
     // should let the environment win).
     max_batch_size: Option<usize>,
     schedule_delay: Option<std::time::Duration>,
+    shutdown_timeout: Option<std::time::Duration>,
 }
 
 impl TracerBuilder {
@@ -72,6 +73,16 @@ impl TracerBuilder {
         self.schedule_delay = Some(delay);
         let mut c = self.config;
         c.schedule_delay = delay;
+        self.config = c;
+        self
+    }
+
+    /// Sets how long [`Tracer::shutdown`] waits for the export worker to drain
+    /// (overrides `OTEL_BSP_EXPORT_TIMEOUT` / the 5s default).
+    pub fn with_shutdown_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.shutdown_timeout = Some(timeout);
+        let mut c = self.config;
+        c.shutdown_timeout = timeout;
         self.config = c;
         self
     }
@@ -144,6 +155,9 @@ impl TracerBuilder {
         }
         if let Some(d) = self.schedule_delay {
             base.schedule_delay = d;
+        }
+        if let Some(t) = self.shutdown_timeout {
+            base.shutdown_timeout = t;
         }
 
         Tracer::from_config(base)
@@ -238,6 +252,27 @@ impl Tracer {
     #[inline]
     pub fn is_enabled(&self) -> bool {
         self.inner.is_enabled()
+    }
+
+    /// Drain and export any buffered spans, then stop the export worker.
+    ///
+    /// Call this during graceful shutdown (e.g. after your server's
+    /// `with_graceful_shutdown` future completes) so in-flight spans reach the
+    /// collector before the process exits. Returns `true` if everything flushed
+    /// within the configured timeout (`with_shutdown_timeout` /
+    /// `OTEL_BSP_EXPORT_TIMEOUT`, default 5s); `false` if the deadline elapsed.
+    ///
+    /// Idempotent and safe on a disabled tracer (returns `true` immediately).
+    /// Must be awaited from within your Tokio runtime.
+    ///
+    /// ```rust,ignore
+    /// let clean = tracer.shutdown().await;
+    /// if !clean {
+    ///     tracing::warn!("trace export did not drain before exit");
+    /// }
+    /// ```
+    pub async fn shutdown(&self) -> bool {
+        self.inner.shutdown().await
     }
 }
 
@@ -565,6 +600,38 @@ mod tests {
 
         // All clones must share the exact same Arc<Pipeline>.
         assert!(Arc::ptr_eq(&t1.inner, &t2.inner));
+    }
+
+    /// `Tracer::shutdown` delegates to the pipeline: it drains a buffered span
+    /// to the exporter and reports a clean result.
+    #[tokio::test]
+    async fn tracer_shutdown_drains_to_exporter() {
+        use crate::context::{SpanId, TraceId};
+        use crate::span::OtelSpan;
+
+        let config = Config::default()
+            .with_service_name("tracer-shutdown")
+            .with_sink_uri("http://example.com");
+        let exporter = Arc::new(crate::exporter::TestExporter::new());
+        let tracer = Tracer {
+            inner: Pipeline::new_for_test_with_exporter(config, exporter.clone()),
+        };
+
+        tracer
+            .inner
+            .send(OtelSpan::new(TraceId::generate(), SpanId::generate(), None, "child").finish());
+
+        assert!(tracer.shutdown().await, "tracer shutdown should drain cleanly");
+        let total: usize = exporter.exported_batches().iter().map(Vec::len).sum();
+        assert_eq!(total, 1, "the buffered span should have reached the exporter");
+    }
+
+    /// `Tracer::shutdown` on a disabled tracer is an immediate no-op.
+    #[tokio::test]
+    async fn tracer_shutdown_disabled_is_noop() {
+        let tracer = Tracer::from_config(Config::default());
+        assert!(!tracer.is_enabled());
+        assert!(tracer.shutdown().await);
     }
 
     // Named test case for Task 4.2 precedence (builder setters > env).

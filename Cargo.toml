@@ -83,7 +83,7 @@ tracing-opentelemetry = { version = "0.33", optional = true }
 proptest = "1.5"
 temp-env = "0.3"
 wiremock = "0.6"
-tokio = { version = "1", features = ["macros", "test-util", "rt-multi-thread", "net"] }
+tokio = { version = "1", features = ["macros", "test-util", "rt-multi-thread", "net", "signal"] }
 # tracing-subscriber and tracing reappear here with extra features (fmt,
 # attributes) that only the example and tests need — the library does not.
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
