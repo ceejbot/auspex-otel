@@ -8,7 +8,7 @@
 //! spans are dropped and counted when the channel is full. The receiver side
 //! will be drained by a background worker task in later phases.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[cfg(test)]
 use std::sync::mpsc::{self as mpsc, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -44,6 +44,7 @@ struct ShutdownState {
 #[derive(Debug)]
 pub struct Pipeline {
     pub config: Config,
+    active: AtomicBool,
     drop_count: AtomicUsize,
 
     /// Production bounded sender (Some when enabled). The matching receiver is
@@ -80,6 +81,7 @@ impl Pipeline {
         if !config.is_enabled() {
             return Arc::new(Self {
                 config,
+                active: AtomicBool::new(false),
                 drop_count: AtomicUsize::new(0),
                 sender: None,
                 shutdown: Mutex::new(None),
@@ -88,12 +90,11 @@ impl Pipeline {
             });
         }
 
-        // Bounded channel: hot path never blocks. Capacity allows reasonable
-        // buffering under burst without unbounded memory growth.
-        let (tx, rx) = tokio_mpsc::channel::<FinishedSpan>(2048);
-
-        let shutdown = if let Some(exporter) = build_exporter(&config) {
+        let (sender, shutdown) = if let Some(exporter) = build_exporter(&config) {
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                // Bounded channel: hot path never blocks. Capacity allows reasonable
+                // buffering under burst without unbounded memory growth.
+                let (tx, rx) = tokio_mpsc::channel::<FinishedSpan>(2048);
                 let (signal, shutdown_rx) = oneshot::channel();
                 let worker = BatchWorker::new(
                     rx,
@@ -106,28 +107,31 @@ impl Pipeline {
                 // channel closes on full drop. Keep its handle so `shutdown()` can
                 // await the final export.
                 let worker = handle.spawn(worker.run());
-                Some(ShutdownState { signal, worker })
+                (Some(tx), Some(ShutdownState { signal, worker }))
             } else {
-                // `rx` drops at function end, closing the channel; sends will count
-                // as drops. Surfaced once so misconfiguration is visible.
+                // Surfaced once so misconfiguration is visible. With no worker,
+                // the public tracer reports disabled and the middleware takes the
+                // cheap no-span path instead of creating spans that can never export.
                 tracing::debug!(
                     target: "auspex::exporter",
                     "no Tokio runtime at pipeline construction; exporter worker not started (spans will be dropped)"
                 );
-                None
+                (None, None)
             }
         } else {
             tracing::warn!(
                 target: "auspex::exporter",
                 "no usable exporter for the resolved config; export disabled (spans will be dropped)"
             );
-            None
+            (None, None)
         };
+        let active = shutdown.is_some();
 
         Arc::new(Self {
             config,
+            active: AtomicBool::new(active),
             drop_count: AtomicUsize::new(0),
-            sender: Some(tx),
+            sender,
             shutdown: Mutex::new(shutdown),
             #[cfg(test)]
             test_sender: None,
@@ -149,6 +153,7 @@ impl Pipeline {
         let Some(ShutdownState { signal, worker }) = state else {
             return true;
         };
+        self.active.store(false, Ordering::Relaxed);
 
         // Err means the worker already exited; the drop path will have drained.
         let _ = signal.send(());
@@ -175,8 +180,10 @@ impl Pipeline {
     #[cfg(test)]
     pub(crate) fn new_for_test(config: Config) -> (Arc<Self>, Receiver<FinishedSpan>) {
         let (tx, rx) = mpsc::channel();
+        let active = config.is_enabled();
         let pipeline = Arc::new(Self {
             config,
+            active: AtomicBool::new(active),
             drop_count: AtomicUsize::new(0),
             sender: None,
             shutdown: Mutex::new(None),
@@ -201,8 +208,10 @@ impl Pipeline {
         capacity: usize,
     ) -> (Arc<Self>, tokio_mpsc::Receiver<FinishedSpan>) {
         let (tx, rx) = tokio_mpsc::channel::<FinishedSpan>(capacity);
+        let active = config.is_enabled();
         let pipeline = Arc::new(Self {
             config,
+            active: AtomicBool::new(active),
             drop_count: AtomicUsize::new(0),
             sender: Some(tx),
             shutdown: Mutex::new(None),
@@ -214,8 +223,8 @@ impl Pipeline {
 
     /// Returns whether exporting is enabled according to the resolved config.
     #[inline]
-    pub(crate) const fn is_enabled(&self) -> bool {
-        self.config.is_enabled()
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.active.load(Ordering::Relaxed)
     }
 
     /// Number of spans dropped because the export channel was full.
@@ -265,6 +274,7 @@ impl Pipeline {
         if !config.is_enabled() {
             return Arc::new(Self {
                 config,
+                active: AtomicBool::new(false),
                 drop_count: AtomicUsize::new(0),
                 sender: None,
                 shutdown: Mutex::new(None),
@@ -285,6 +295,7 @@ impl Pipeline {
 
         Arc::new(Self {
             config,
+            active: AtomicBool::new(true),
             drop_count: AtomicUsize::new(0),
             sender: Some(tx),
             shutdown: Mutex::new(Some(ShutdownState { signal, worker })),
@@ -399,6 +410,10 @@ mod tests {
 
         assert!(pipeline.shutdown().await, "first shutdown drains cleanly");
         assert!(pipeline.shutdown().await, "second shutdown is a no-op returning true");
+        assert!(
+            !pipeline.is_enabled(),
+            "shutdown pipeline should no longer report that it can export"
+        );
     }
 
     /// `shutdown()` on a disabled pipeline returns immediately (no worker to
@@ -410,6 +425,40 @@ mod tests {
         assert!(
             pipeline.shutdown().await,
             "disabled pipeline shutdown is an immediate no-op"
+        );
+    }
+
+    /// If configured outside a Tokio runtime, no export worker can be spawned,
+    /// so the pipeline must report disabled rather than accepting spans that
+    /// will never be exported.
+    #[test]
+    fn enabled_config_without_runtime_reports_disabled() {
+        let config = Config::default()
+            .with_service_name("no-runtime")
+            .with_sink_uri("http://example.com");
+
+        let pipeline = Pipeline::from_config(config);
+
+        assert!(
+            !pipeline.is_enabled(),
+            "pipeline without a worker must take the disabled path"
+        );
+    }
+
+    /// Bad exporter construction also leaves no worker, so `is_enabled()`
+    /// should reflect reality rather than just the resolved config.
+    #[tokio::test]
+    async fn exporter_construction_failure_reports_disabled() {
+        let config = Config::default()
+            .with_service_name("bad-header")
+            .with_sink_uri("http://example.com")
+            .with_headers([("bad header name", "value")]);
+
+        let pipeline = Pipeline::from_config(config);
+
+        assert!(
+            !pipeline.is_enabled(),
+            "pipeline with no usable exporter must report disabled"
         );
     }
 
@@ -522,8 +571,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn pipeline_from_config_respects_enabled() {
+    #[tokio::test]
+    async fn pipeline_from_config_respects_enabled() {
         let disabled = Config::default();
         let p = Pipeline::from_config(disabled);
         assert!(!p.is_enabled());
@@ -533,6 +582,7 @@ mod tests {
             .with_sink_uri("http://localhost:4318");
         let p2 = Pipeline::from_config(enabled);
         assert!(p2.is_enabled());
+        assert!(p2.shutdown().await);
     }
 
     #[test]

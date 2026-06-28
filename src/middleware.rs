@@ -60,30 +60,39 @@ impl TracerBuilder {
     }
 
     /// Sets the maximum batch size for the exporter (overrides env / default).
+    /// Invalid values (0 or above 10,000) are ignored.
     pub fn with_max_batch_size(mut self, size: usize) -> Self {
-        self.max_batch_size = Some(size);
-        let mut c = self.config;
-        c.max_export_batch_size = size;
-        self.config = c;
+        if (1..=10_000).contains(&size) {
+            self.max_batch_size = Some(size);
+            let mut c = self.config;
+            c.max_export_batch_size = size;
+            self.config = c;
+        }
         self
     }
 
     /// Sets the schedule delay for the exporter (overrides env / default).
+    /// Invalid values (zero or at least one hour) are ignored.
     pub fn with_schedule_delay(mut self, delay: std::time::Duration) -> Self {
-        self.schedule_delay = Some(delay);
-        let mut c = self.config;
-        c.schedule_delay = delay;
-        self.config = c;
+        if is_valid_duration_knob(delay) {
+            self.schedule_delay = Some(delay);
+            let mut c = self.config;
+            c.schedule_delay = delay;
+            self.config = c;
+        }
         self
     }
 
     /// Sets how long [`Tracer::shutdown`] waits for the export worker to drain
     /// (overrides `OTEL_BSP_EXPORT_TIMEOUT` / the 5s default).
+    /// Invalid values (zero or at least one hour) are ignored.
     pub fn with_shutdown_timeout(mut self, timeout: std::time::Duration) -> Self {
-        self.shutdown_timeout = Some(timeout);
-        let mut c = self.config;
-        c.shutdown_timeout = timeout;
-        self.config = c;
+        if is_valid_duration_knob(timeout) {
+            self.shutdown_timeout = Some(timeout);
+            let mut c = self.config;
+            c.shutdown_timeout = timeout;
+            self.config = c;
+        }
         self
     }
 
@@ -162,6 +171,10 @@ impl TracerBuilder {
 
         Tracer::from_config(base)
     }
+}
+
+fn is_valid_duration_knob(duration: std::time::Duration) -> bool {
+    !duration.is_zero() && duration < std::time::Duration::from_secs(60 * 60)
 }
 
 impl Default for Tracer {
@@ -693,6 +706,63 @@ mod tests {
     }
 
     #[test]
+    fn invalid_builder_knobs_are_ignored() {
+        use std::time::Duration;
+
+        use temp_env::with_vars;
+
+        with_vars(
+            [
+                ("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", None::<&str>),
+                ("OTEL_BSP_SCHEDULE_DELAY", None),
+                ("OTEL_BSP_EXPORT_TIMEOUT", None),
+            ],
+            || {
+                let t = TracerBuilder::new()
+                    .with_max_batch_size(0)
+                    .with_max_batch_size(10_001)
+                    .with_schedule_delay(Duration::ZERO)
+                    .with_schedule_delay(Duration::from_secs(60 * 60))
+                    .with_shutdown_timeout(Duration::ZERO)
+                    .with_shutdown_timeout(Duration::from_secs(60 * 60))
+                    .build();
+                let cfg = t.config_for_test();
+
+                assert_eq!(cfg.max_export_batch_size, 512);
+                assert_eq!(cfg.schedule_delay, Duration::from_secs(5));
+                assert_eq!(cfg.shutdown_timeout, Duration::from_secs(5));
+            },
+        );
+    }
+
+    #[test]
+    fn valid_builder_knobs_override_env_values() {
+        use std::time::Duration;
+
+        use temp_env::with_vars;
+
+        with_vars(
+            [
+                ("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", Some("2048")),
+                ("OTEL_BSP_SCHEDULE_DELAY", Some("30000")),
+                ("OTEL_BSP_EXPORT_TIMEOUT", Some("30000")),
+            ],
+            || {
+                let t = TracerBuilder::new()
+                    .with_max_batch_size(32)
+                    .with_schedule_delay(Duration::from_millis(250))
+                    .with_shutdown_timeout(Duration::from_secs(2))
+                    .build();
+                let cfg = t.config_for_test();
+
+                assert_eq!(cfg.max_export_batch_size, 32);
+                assert_eq!(cfg.schedule_delay, Duration::from_millis(250));
+                assert_eq!(cfg.shutdown_timeout, Duration::from_secs(2));
+            },
+        );
+    }
+
+    #[test]
     fn builder_resource_attributes_override_env_keys_but_keep_others() {
         use temp_env::with_var;
 
@@ -762,8 +832,8 @@ mod tests {
         assert!(Arc::ptr_eq(&tracer.inner, &pipeline));
     }
 
-    #[test]
-    fn try_from_config_distinguishes_misconfig_from_disabled() {
+    #[tokio::test]
+    async fn try_from_config_distinguishes_misconfig_from_disabled() {
         use crate::error::ConfigError;
 
         // Full config (sink + name) → enabled success
@@ -772,6 +842,7 @@ mod tests {
             .with_sink_uri("http://localhost:4318");
         let t = Tracer::try_from_config(full).expect("full config should succeed");
         assert!(t.is_enabled());
+        assert!(t.shutdown().await);
 
         // No sink at all → disabled success (the common "not configured" case)
         let empty = Config::default();
