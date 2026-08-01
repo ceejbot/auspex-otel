@@ -47,10 +47,12 @@ numbers and method in [`docs/benchmarks/v0.1.md`](docs/benchmarks/v0.1.md):
 ## Install
 
 ```sh
-cargo add auspex
+cargo add auspex-otel
 # enable axum route-name extraction (recommended for axum apps):
-cargo add auspex --features axum
+cargo add auspex-otel --features axum
 ```
+
+The package is named `auspex-otel`, but you import its library as `auspex`.
 
 The `axum` feature lets auspex read axum's `MatchedPath`, so HTTP span names are
 the low-cardinality route (`GET /users/{id}`) rather than just the method.
