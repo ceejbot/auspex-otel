@@ -150,6 +150,7 @@ extras). It is intentionally narrow:
 | `OTEL_EXPORTER_OTLP_ENDPOINT`        | Standard OTLP/HTTP base (auspex appends `/v1/traces`).                                                            |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Standard per-signal OTLP endpoint (used as-is).                                                                   |
 | `OTEL_EXPORTER_OTLP_HEADERS`         | Comma-separated `k=v` headers sent on every export request.                                                       |
+| `OTEL_EXPORTER_OTLP_TRACES_HEADERS`  | Per-signal headers; when set, these replace `OTEL_EXPORTER_OTLP_HEADERS`.                                         |
 | `OTEL_TRACES_EXPORTER=none`          | Force disabled mode.                                                                                              |
 | `OTEL_BSP_MAX_EXPORT_BATCH_SIZE`     | Max spans per export batch (default 512).                                                                         |
 | `OTEL_BSP_SCHEDULE_DELAY`            | Batch flush interval, in **milliseconds** (default 5000).                                                         |
@@ -177,7 +178,9 @@ blocks on export.
 Each HTTP request becomes a root span with OTEL-semantic attributes:
 
 - `http.request.method`, `url.path`, `url.scheme`, `url.query` (when present),
-  `network.protocol.name`
+  `network.protocol.name`. Known credential-bearing query values (OAuth tokens
+  and codes, API keys, passwords, session identifiers, and signatures) are
+  replaced with `REDACTED` before export.
 - `http.route` — only with the `axum` feature and a matched route (raw paths are
   never used as span names)
 - `http.response.status_code`

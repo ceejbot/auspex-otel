@@ -96,6 +96,70 @@ pub enum ExporterKind {
     None,
 }
 
+#[derive(Clone, Copy)]
+enum EndpointSource {
+    SinkUri,
+    OtlpTraces,
+    OtlpBase,
+}
+
+#[derive(Clone, Copy)]
+enum OtlpPathMode {
+    DefaultIfRoot,
+    AsIs,
+    AppendTraces,
+}
+
+fn resolve_otlp_http_endpoint(raw: &str, path_mode: OtlpPathMode) -> Result<Endpoint, ConfigError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ConfigError::InvalidExporterEndpoint("empty endpoint".into()));
+    }
+
+    if trimmed.starts_with("grpc://") || trimmed.starts_with("otlp+grpc://") {
+        return Err(ConfigError::InvalidExporterEndpoint(
+            "gRPC endpoints are not supported in v0.1 (no grpc feature)".into(),
+        ));
+    }
+
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err(ConfigError::InvalidExporterEndpoint(format!(
+            "unsupported or unparseable endpoint: {trimmed}"
+        )));
+    }
+
+    let mut url = Url::parse(trimmed)
+        .map_err(|_| ConfigError::InvalidExporterEndpoint(format!("unsupported or unparseable endpoint: {trimmed}")))?;
+
+    match path_mode {
+        OtlpPathMode::DefaultIfRoot if url.path() == "/" || url.path().is_empty() => {
+            url.set_path("/v1/traces");
+        }
+        OtlpPathMode::AppendTraces => {
+            // The generic OTLP endpoint is a base URL. Appending via path
+            // segments preserves any percent-encoding already present.
+            url.path_segments_mut()
+                .map_err(|()| {
+                    ConfigError::InvalidExporterEndpoint(format!("endpoint cannot be used as a base URL: {trimmed}"))
+                })?
+                .pop_if_empty()
+                .push("v1")
+                .push("traces");
+        }
+        OtlpPathMode::DefaultIfRoot | OtlpPathMode::AsIs => {}
+    }
+
+    Ok(Endpoint::OtlpHttp(url))
+}
+
+fn resolve_endpoint_from_source(raw: &str, source: EndpointSource) -> Result<Endpoint, ConfigError> {
+    match source {
+        EndpointSource::SinkUri => resolve_endpoint(raw),
+        EndpointSource::OtlpTraces => resolve_otlp_http_endpoint(raw, OtlpPathMode::AsIs),
+        EndpointSource::OtlpBase => resolve_otlp_http_endpoint(raw, OtlpPathMode::AppendTraces),
+    }
+}
+
 /// Endpoint resolver used by `from_env` and builder paths.
 /// Applies scheme dispatch + documented path defaults.
 /// Returns Err for unsupported schemes in v0.1 (e.g. grpc) so that
@@ -137,20 +201,9 @@ pub fn resolve_endpoint(raw: &str) -> Result<Endpoint, ConfigError> {
         }
     }
 
-    // http / https → OTLP
-    if (trimmed.starts_with("http://") || trimmed.starts_with("https://"))
-        && let Ok(u) = Url::parse(trimmed)
-    {
-        let mut u = u;
-        if u.path() == "/" || u.path().is_empty() {
-            u.set_path("/v1/traces");
-        }
-        return Ok(Endpoint::OtlpHttp(u));
-    }
-
-    Err(ConfigError::InvalidExporterEndpoint(format!(
-        "unsupported or unparseable endpoint: {trimmed}"
-    )))
+    // http / https → OTLP. The auspex-specific sink URI keeps its
+    // historical behavior: only a root path receives the traces default.
+    resolve_otlp_http_endpoint(trimmed, OtlpPathMode::DefaultIfRoot)
 }
 
 /// Parse `OTEL_EXPORTER_OTLP_HEADERS` style strings ("k1=v1,k2=v2").
@@ -224,7 +277,7 @@ impl Config {
             } else {
                 c.sink_uri = Some(uri.trim().to_string());
                 c.disabled = false;
-                Some(uri.trim().to_string())
+                Some((uri.trim().to_string(), EndpointSource::SinkUri))
             }
         } else if let Ok(ep) = env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") {
             if ep.trim().is_empty() {
@@ -232,7 +285,7 @@ impl Config {
             } else {
                 c.sink_uri = Some(ep.trim().to_string());
                 c.disabled = false;
-                Some(ep.trim().to_string())
+                Some((ep.trim().to_string(), EndpointSource::OtlpTraces))
             }
         } else if let Ok(ep) = env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
             if ep.trim().is_empty() {
@@ -240,7 +293,7 @@ impl Config {
             } else {
                 c.sink_uri = Some(ep.trim().to_string());
                 c.disabled = false;
-                Some(ep.trim().to_string())
+                Some((ep.trim().to_string(), EndpointSource::OtlpBase))
             }
         } else {
             None
@@ -249,8 +302,8 @@ impl Config {
         // Resolve into typed endpoint when possible.
         // On failure (invalid scheme, etc.) treat as unusable sink in the
         // convenience path: disable rather than leaving a broken config enabled.
-        if let Some(raw) = &raw_sink {
-            if let Ok(ep) = resolve_endpoint(raw) {
+        if let Some((raw, source)) = &raw_sink {
+            if let Ok(ep) = resolve_endpoint_from_source(raw, *source) {
                 c.endpoint = Some(ep.clone());
                 match &ep {
                     Endpoint::OtlpHttp(_) => c.exporter = ExporterKind::Otlp,
@@ -274,15 +327,13 @@ impl Config {
             c.exporter = ExporterKind::None;
         }
 
-        if let Ok(h) = env::var("OTEL_EXPORTER_OTLP_HEADERS")
-            && !h.trim().is_empty()
-        {
-            c.headers = parse_headers(&h);
-        }
-        if let Ok(h) = env::var("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
-            && !h.trim().is_empty()
-            && c.headers.is_empty()
-        {
+        let trace_headers = env::var("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
+            .ok()
+            .filter(|headers| !headers.trim().is_empty());
+        let generic_headers = env::var("OTEL_EXPORTER_OTLP_HEADERS")
+            .ok()
+            .filter(|headers| !headers.trim().is_empty());
+        if let Some(h) = trace_headers.or(generic_headers) {
             c.headers = parse_headers(&h);
         }
 
@@ -637,6 +688,7 @@ mod tests {
     fn traces_specific_otlp_endpoint_takes_precedence() {
         temp_env::with_vars(
             [
+                ("OTEL_SINK_URI", None),
                 ("OTEL_EXPORTER_OTLP_ENDPOINT", Some("http://generic.example.com:4318")),
                 (
                     "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
@@ -646,6 +698,62 @@ mod tests {
             || {
                 let c = Config::from_env();
                 assert_eq!(c.sink_uri.as_deref(), Some("http://traces.example.com:4318"));
+                match c.endpoint {
+                    Some(Endpoint::OtlpHttp(url)) => {
+                        assert_eq!(url.host_str(), Some("traces.example.com"));
+                        assert_eq!(url.path(), "/", "the per-signal endpoint must be used as-is");
+                    }
+                    endpoint => panic!("expected trace-specific OTLP endpoint, got {endpoint:?}"),
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn generic_otlp_endpoint_appends_traces_path_to_base_path() {
+        temp_env::with_vars(
+            [
+                ("OTEL_SINK_URI", None),
+                ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", None),
+                (
+                    "OTEL_EXPORTER_OTLP_ENDPOINT",
+                    Some("https://collector.example.com/custom/base"),
+                ),
+            ],
+            || {
+                let c = Config::from_env();
+                match c.endpoint {
+                    Some(Endpoint::OtlpHttp(url)) => {
+                        assert_eq!(url.path(), "/custom/base/v1/traces");
+                    }
+                    endpoint => panic!("expected generic OTLP endpoint, got {endpoint:?}"),
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn traces_specific_otlp_headers_take_precedence() {
+        temp_env::with_vars(
+            [
+                (
+                    "OTEL_EXPORTER_OTLP_HEADERS",
+                    Some("authorization=generic,x-shared=generic"),
+                ),
+                (
+                    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+                    Some("authorization=traces,x-trace=yes"),
+                ),
+            ],
+            || {
+                let c = Config::from_env();
+                assert_eq!(
+                    c.headers,
+                    vec![
+                        ("authorization".to_string(), "traces".to_string()),
+                        ("x-trace".to_string(), "yes".to_string()),
+                    ]
+                );
             },
         );
     }
