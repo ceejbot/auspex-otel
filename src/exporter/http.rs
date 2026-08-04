@@ -50,6 +50,13 @@ impl HttpPoster {
         content_type: &'static str,
         headers: &[(String, String)],
     ) -> Result<Self, ExportError> {
+        // We compile rustls with only the `ring` provider, but a consuming app
+        // may enable `aws-lc-rs` elsewhere in its tree; with both features
+        // present rustls cannot infer a default and reqwest's builder panics.
+        // Installing ring as the process default (a no-op if the app already
+        // installed one) keeps client construction infallible either way.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         let client = reqwest::Client::builder()
             .timeout(EXPORT_TIMEOUT)
             .build()
