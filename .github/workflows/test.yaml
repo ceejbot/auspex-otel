@@ -55,6 +55,15 @@ jobs:
                     mv cargo-nextest /home/runner/.cargo/bin
                   fi
 
+            # The aws-lc bans left deny.toml when the `aws-lc-rs` feature
+            # arrived (CI deny runs --all-features, which would always trip
+            # them), so this assertion is now what guards the invariant: the
+            # default graph compiles no cmake-built C library. It catches a
+            # future reqwest/rustls bump quietly re-adding aws-lc.
+            - name: default graph stays ring-only
+              shell: bash
+              run: "! cargo tree -i aws-lc-sys"
+
             - name: run all tests
               shell: bash
               run: |
