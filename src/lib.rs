@@ -53,9 +53,27 @@
 //!
 //! tracer.shutdown().await; // drain + export before exit
 //! ```
+//!
+//! ## Cargo features
+//!
+//! - `ring` *(default)* — use [ring](https://docs.rs/ring) as the rustls crypto
+//!   provider. Pure Rust + assembly; no C toolchain required.
+//! - `aws-lc-rs` — use [aws-lc-rs](https://docs.rs/aws-lc-rs) instead. Its
+//!   aws-lc-sys build requires cmake and a C compiler. If both provider
+//!   features are enabled, aws-lc-rs wins. Exactly one provider is required;
+//!   with `default-features = false` you must enable one explicitly.
+//! - `axum` — route naming via axum's `MatchedPath`. Recommended for axum apps.
+//! - `compare-otel` — dev-only; pulls the OpenTelemetry SDK for the comparison
+//!   benchmark.
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
+
+#[cfg(not(any(feature = "ring", feature = "aws-lc-rs")))]
+compile_error!(
+    "auspex-otel needs a TLS crypto provider: enable the `ring` feature (default) or `aws-lc-rs`. \
+     With `default-features = false`, add one of them explicitly."
+);
 
 // Internal modules first (required before pub use re-exports).
 mod config;

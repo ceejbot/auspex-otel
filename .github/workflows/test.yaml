@@ -64,6 +64,13 @@ jobs:
             - name: Run doctests
               run: cargo test --doc
 
+            # `--no-default-features` is load-bearing: it exercises the graph
+            # where ring does not exist at all, so passing tests prove aws-lc-rs
+            # is the installed runtime provider.
+            - name: test aws-lc-rs provider
+              if: ${{ matrix.rust == 'stable' }}
+              run: cargo nextest run --workspace --lib --tests --no-default-features --features aws-lc-rs,axum --future-incompat-report
+
             # Lint policy and MSRV compatibility are separate concerns.
             - name: consult Clippy (strict)
               if: ${{ matrix.rust == 'stable' }}
@@ -71,6 +78,7 @@ jobs:
               run: |
                 cargo clippy --workspace --all-targets -- -D warnings
                 cargo clippy --workspace --all-targets --features axum -- -D warnings
+                cargo clippy --workspace --lib --tests --no-default-features --features aws-lc-rs,axum -- -D warnings
 
     deny:
         name: cargo-deny

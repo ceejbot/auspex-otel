@@ -1,6 +1,6 @@
 [package]
 name = "auspex-otel"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"
@@ -67,12 +67,13 @@ tokio = { version = "1", default-features = false, features = ["sync", "rt", "ti
 pin-project-lite = "0.2"
 url = "2"
 async-trait = "0.1"
-# `rustls-no-provider` wires up rustls without a crypto provider so we can pick
-# one ourselves: ring (pure-ish Rust + asm) instead of rustls's default
-# aws-lc-rs, whose aws-lc-sys build dependency (cmake + a large C library) is
-# exactly the kind of heavyweight transitive dep this crate exists to avoid.
+# `rustls-no-provider` wires up rustls without a crypto provider so the choice
+# lives on our `ring`/`aws-lc-rs` features (reqwest's own `rustls` feature would
+# hard-enable aws-lc-rs). The default is ring: aws-lc-rs's aws-lc-sys build
+# dependency (cmake + a large C library) is exactly the kind of heavyweight
+# transitive dep this crate exists to avoid, so it is opt-in only.
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls-no-provider", "http2"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12"] }
 prost = { version = "0.14", default-features = false, features = ["derive", "std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -95,8 +96,12 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 tracing = { version = "0.1", features = ["attributes"] }
 
 [features]
-default = []
+default = ["ring"]
 axum = ["dep:axum"]
+# TLS crypto provider for rustls — enable exactly one; if both end up enabled
+# (feature unification), aws-lc-rs wins so the opt-in is honored.
+ring = ["rustls/ring"]
+aws-lc-rs = ["rustls/aws-lc-rs"]
 # Pulls in the OpenTelemetry SDK for benches/compare_otel.rs only.
 compare-otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:tracing-opentelemetry"]
 

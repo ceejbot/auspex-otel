@@ -50,11 +50,17 @@ impl HttpPoster {
         content_type: &'static str,
         headers: &[(String, String)],
     ) -> Result<Self, ExportError> {
-        // We compile rustls with only the `ring` provider, but a consuming app
-        // may enable `aws-lc-rs` elsewhere in its tree; with both features
-        // present rustls cannot infer a default and reqwest's builder panics.
-        // Installing ring as the process default (a no-op if the app already
+        // A consuming app may compile more rustls providers than our feature
+        // selection asks for (feature unification); with several present rustls
+        // cannot infer a default and reqwest's builder panics. Installing our
+        // selected provider as the process default (a no-op if the app already
         // installed one) keeps client construction infallible either way.
+        // aws-lc-rs wins over ring when both features are enabled: unification
+        // means an aws-lc opt-in can never subtract another dep's `ring`
+        // request, so the opt-in must be honored here.
+        #[cfg(feature = "aws-lc-rs")]
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        #[cfg(all(feature = "ring", not(feature = "aws-lc-rs")))]
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         let client = reqwest::Client::builder()

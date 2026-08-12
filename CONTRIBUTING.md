@@ -50,7 +50,7 @@ Individual recipes also exist:
 - `just deny`
 
 We use `cargo nextest` and strict Clippy (`-D warnings`).
-Both the default feature set *and* `--features axum` are checked (the `just ci` / `just clippy` targets run the full matrix so feature-gated code such as MatchedPath handling is covered).
+Both the default feature set *and* `--features axum` are checked (the `just ci` / `just clippy` targets run the full matrix so feature-gated code such as MatchedPath handling is covered). The `aws-lc-rs` crypto-provider combo (`--no-default-features --features aws-lc-rs,axum`) is checked in GitHub Actions CI only — it compiles a cmake-built C library, so it stays out of the local `just ci` loop.
 
 ### Commit messages & PRs
 
