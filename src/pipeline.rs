@@ -56,7 +56,8 @@ pub struct Pipeline {
     /// Touched only by `shutdown()`, never on the hot path.
     shutdown: Mutex<Option<ShutdownState>>,
 
-    // For Task 3.2 test support (separate std mpsc so plain #[test] can recv easily)
+    // For Task 3.2 test support (separate std mpsc so plain #[test] can recv
+    // easily)
     #[cfg(test)]
     test_sender: Option<Sender<FinishedSpan>>,
 }
@@ -92,8 +93,9 @@ impl Pipeline {
 
         let (sender, shutdown) = if let Some(exporter) = build_exporter(&config) {
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                // Bounded channel: hot path never blocks. Capacity allows reasonable
-                // buffering under burst without unbounded memory growth.
+                // Bounded channel: hot path never blocks. Capacity allows
+                // reasonable buffering under burst without unbounded memory
+                // growth.
                 let (tx, rx) = tokio_mpsc::channel::<FinishedSpan>(2048);
                 let (signal, shutdown_rx) = oneshot::channel();
                 let worker = BatchWorker::new(
@@ -103,15 +105,16 @@ impl Pipeline {
                     config.schedule_delay,
                     shutdown_rx,
                 );
-                // The worker drains on an explicit `shutdown()` signal, or when the
-                // channel closes on full drop. Keep its handle so `shutdown()` can
-                // await the final export.
+                // The worker drains on an explicit `shutdown()` signal, or when
+                // the channel closes on full drop. Keep its handle so
+                // `shutdown()` can await the final export.
                 let worker = handle.spawn(worker.run());
                 (Some(tx), Some(ShutdownState { signal, worker }))
             } else {
                 // Surfaced once so misconfiguration is visible. With no worker,
-                // the public tracer reports disabled and the middleware takes the
-                // cheap no-span path instead of creating spans that can never export.
+                // the public tracer reports disabled and the middleware takes
+                // the cheap no-span path instead of creating spans that can
+                // never export.
                 tracing::debug!(
                     target: "auspex::exporter",
                     "no Tokio runtime at pipeline construction; exporter worker not started (spans will be dropped)"
@@ -361,7 +364,8 @@ mod tests {
     #[tokio::test]
     async fn end_to_end_finished_span_reaches_test_exporter() {
         use crate::context::{SpanId, TraceId};
-        // TestExporter is qualified below to avoid unused import warnings in non-test builds.
+        // TestExporter is qualified below to avoid unused import warnings in
+        // non-test builds.
         use crate::span::OtelSpan;
 
         let config = Config::default()
@@ -630,12 +634,13 @@ mod tests {
             .with_service_name("bp-test")
             .with_sink_uri("http://localhost:4318");
 
-        // Tiny bounded production channel (exercises the real tokio try_send path)
+        // Tiny bounded production channel (exercises the real tokio try_send
+        // path)
         let (pipeline, mut rx) = Pipeline::new_for_production_test(config, 1);
 
         // Helper to make distinct minimal finished spans.
-        // Use to_string() so the &str (even if literal) satisfies Cow<'static, str> in
-        // OtelSpan.
+        // Use to_string() so the &str (even if literal) satisfies Cow<'static,
+        // str> in OtelSpan.
         let make_span = |name: &str| {
             let live = OtelSpan::new(TraceId::ZERO, SpanId::ZERO, None, name.to_string());
             live.finish()

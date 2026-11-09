@@ -243,7 +243,8 @@ impl OtelSpan {
         if self.attributes.len() < self.attributes.capacity() {
             self.attributes.push((key, value));
         } else if is_protected {
-            // Evict the first non-protected attribute to make room for this critical one
+            // Evict the first non-protected attribute to make room for this
+            // critical one
             if let Some(pos) = self
                 .attributes
                 .iter()
@@ -251,7 +252,8 @@ impl OtelSpan {
             {
                 self.attributes[pos] = (key, value);
             } else {
-                // All existing attributes are protected — we have to drop this one (very rare)
+                // All existing attributes are protected — we have to drop this
+                // one (very rare)
                 self.dropped_attributes_count = self.dropped_attributes_count.saturating_add(1);
             }
         } else {

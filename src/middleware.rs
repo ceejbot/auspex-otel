@@ -141,7 +141,8 @@ impl TracerBuilder {
         let mut base = Config::from_env();
 
         // Overlay only fields the caller actually set: Some for name/uri, a
-        // non-empty list, or the BSP Option trackers. Everything else lets env win.
+        // non-empty list, or the BSP Option trackers. Everything else lets env
+        // win.
         if let Some(name) = &self.config.service_name {
             base = base.with_service_name(name.clone());
         }
@@ -155,7 +156,8 @@ impl TracerBuilder {
             base = base.with_headers(self.config.headers.clone());
         }
         if !self.config.resource_attributes.is_empty() {
-            // Merges over env-parsed attrs: builder keys win, env-only keys stay.
+            // Merges over env-parsed attrs: builder keys win, env-only keys
+            // stay.
             base = base.with_resource_attributes(self.config.resource_attributes.clone());
         }
 
@@ -360,8 +362,9 @@ where
                     this.span.record("error.type", code.to_string());
                 }
 
-                // Opt-in response header capture (AUSPEX_CAPTURE_HEADERS_PREFIX).
-                // Denylist always wins (case-insensitive). Multi-value joined by ','.
+                // Opt-in response header capture
+                // (AUSPEX_CAPTURE_HEADERS_PREFIX). Denylist always wins
+                // (case-insensitive). Multi-value joined by ','.
                 if !this.capture_header_prefixes.is_empty() {
                     for name in response.headers().keys() {
                         let name_str = name.as_str();
@@ -380,12 +383,14 @@ where
                             if !values.is_empty() {
                                 let joined = values.join(",");
                                 let normalized = normalize_response_header_name(name_str);
-                                // Header attribute keys are dynamic, so they cannot be
-                                // declared on the span. Funnel them through the single
-                                // declared `http.response.header` field as `name=value`;
-                                // the FieldVisitor splits it back into the namespaced
-                                // `http.response.header.<name>` attribute. A header name
-                                // never contains '=', so split_once is unambiguous.
+                                // Header attribute keys are dynamic, so they
+                                // cannot be declared on the span. Funnel them
+                                // through the single declared `http.response.
+                                // header` field as `name=value`;
+                                // the FieldVisitor splits it back into the
+                                // namespaced `http.response.header.<name>`
+                                // attribute. A header name never contains '=',
+                                // so split_once is unambiguous.
                                 this.span
                                     .record("http.response.header", format!("{normalized}={joined}").as_str());
                             }
@@ -419,7 +424,8 @@ where
     #[allow(clippy::option_if_let_else)]
     fn call(&mut self, req: Request<B>) -> Self::Future {
         if !self.pipeline.is_enabled() {
-            // Disabled: a no-op span (no allocation); ResponseFuture unifies the type.
+            // Disabled: a no-op span (no allocation); ResponseFuture unifies
+            // the type.
             let span = tracing::Span::none();
             return ResponseFuture {
                 inner: self.inner.call(req),
@@ -449,8 +455,8 @@ where
             root_span.record("server.address", host);
         }
 
-        // Only a matched (low-cardinality) route becomes `http.route`; raw paths
-        // never do — they stay in `url.path`.
+        // Only a matched (low-cardinality) route becomes `http.route`; raw
+        // paths never do — they stay in `url.path`.
         #[cfg(feature = "axum")]
         if let Some(r) = req
             .extensions()
@@ -461,7 +467,8 @@ where
         }
 
         // Deliberately not entered here: the ResponseFuture owns the span and
-        // enters it on each poll, so the span outlives this `call()` stack frame.
+        // enters it on each poll, so the span outlives this `call()` stack
+        // frame.
         ResponseFuture {
             inner: self.inner.call(req),
             span: root_span,
@@ -507,7 +514,8 @@ impl<S> TracerService<S> {
         let scheme = req.uri().scheme_str().unwrap_or("http");
         let protocol = "http";
 
-        // The matched route gives the low-cardinality span name; raw paths must not.
+        // The matched route gives the low-cardinality span name; raw paths must
+        // not.
         #[cfg(feature = "axum")]
         let route = req
             .extensions()
@@ -561,7 +569,8 @@ impl<S> TracerService<S> {
                 "network.protocol.name" = protocol,
                 "otel.name" = desired_name.as_ref(),
                 "otel.kind" = "server",
-                // Late-fill slots (declared so post-construction record() works):
+                // Late-fill slots (declared so post-construction record()
+                // works):
                 "http.route" = Empty,
                 "http.response.status_code" = Empty,
                 "otel.status_code" = Empty,
@@ -904,8 +913,8 @@ mod tests {
         };
 
         // Simulate both paths using the same pipeline.
-        // In a full implementation the subscriber_layer would produce an OtelLayer
-        // that also uses this pipeline.
+        // In a full implementation the subscriber_layer would produce an
+        // OtelLayer that also uses this pipeline.
         let _layer = tracer.subscriber_layer();
 
         // For now we just assert the shared pipeline invariant holds.
@@ -1187,7 +1196,8 @@ mod tests {
     }
 
     // Opt-in response-header capture: a matching prefix is captured under the
-    // OTEL `http.response.header.<name>` attribute (with `-` normalized to `_`).
+    // OTEL `http.response.header.<name>` attribute (with `-` normalized to
+    // `_`).
     #[cfg(feature = "axum")]
     #[tokio::test]
     async fn response_header_matching_prefix_is_captured() {
@@ -1235,7 +1245,8 @@ mod tests {
         use axum::routing::get;
         use tracing_subscriber::layer::SubscriberExt;
 
-        // A prefix that *would* match "authorization", to prove the denylist wins.
+        // A prefix that *would* match "authorization", to prove the denylist
+        // wins.
         let mut cfg = Config::default()
             .with_service_name("denylist-test")
             .with_sink_uri("http://example.com");

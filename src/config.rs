@@ -301,7 +301,8 @@ impl Config {
 
         // Resolve into typed endpoint when possible.
         // On failure (invalid scheme, etc.) treat as unusable sink in the
-        // convenience path: disable rather than leaving a broken config enabled.
+        // convenience path: disable rather than leaving a broken config
+        // enabled.
         if let Some((raw, source)) = &raw_sink {
             if let Ok(ep) = resolve_endpoint_from_source(raw, *source) {
                 c.endpoint = Some(ep.clone());
@@ -346,7 +347,8 @@ impl Config {
         }
         if let Ok(s) = env::var("OTEL_BSP_SCHEDULE_DELAY") {
             // Per the OTEL spec this value is in milliseconds (default 5000).
-            // Bound to (0, 1h) to reject nonsense; out-of-range keeps the default.
+            // Bound to (0, 1h) to reject nonsense; out-of-range keeps the
+            // default.
             if let Ok(ms) = s.trim().parse::<u64>()
                 && ms > 0
                 && ms < 3_600_000
@@ -355,8 +357,9 @@ impl Config {
             }
         }
         if let Ok(s) = env::var("OTEL_BSP_EXPORT_TIMEOUT") {
-            // Per the OTEL spec this value is in milliseconds. We reuse it as the
-            // shutdown drain deadline. Same (0, 1h) bound; bad value keeps default.
+            // Per the OTEL spec this value is in milliseconds. We reuse it as
+            // the shutdown drain deadline. Same (0, 1h) bound; bad value keeps
+            // default.
             if let Ok(ms) = s.trim().parse::<u64>()
                 && ms > 0
                 && ms < 3_600_000
@@ -375,8 +378,9 @@ impl Config {
                 .collect();
         }
 
-        // Parsed after OTEL_SERVICE_NAME so an explicit service name wins over a
-        // `service.name` carried in OTEL_RESOURCE_ATTRIBUTES (see the setter).
+        // Parsed after OTEL_SERVICE_NAME so an explicit service name wins over
+        // a `service.name` carried in OTEL_RESOURCE_ATTRIBUTES (see the
+        // setter).
         if let Ok(attrs) = env::var("OTEL_RESOURCE_ATTRIBUTES")
             && !attrs.trim().is_empty()
         {
@@ -490,7 +494,11 @@ impl Config {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::match_wildcard_for_single_variants)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::match_wildcard_for_single_variants,
+    clippy::assert_is_empty
+)]
 mod tests {
     use super::*;
 
@@ -527,10 +535,10 @@ mod tests {
     }
 
     // TDD step 1 — first Validate bullet: "Builder overrides env".
-    // Demonstrates the override contract using the existing with_* builder-style
-    // methods (the foundation for the real TracerBuilder in 4.2). No global
-    // env mutation for this bullet (env-interaction tests will introduce a
-    // module-level Mutex or temp-env later per the Gotchas).
+    // Demonstrates the override contract using the existing with_*
+    // builder-style methods (the foundation for the real TracerBuilder in 4.2).
+    // No global env mutation for this bullet (env-interaction tests will
+    // introduce a module-level Mutex or temp-env later per the Gotchas).
     #[test]
     fn builder_value_overrides_env() {
         // Simulate a "from env" base config (service name came from OTEL_*).
@@ -564,8 +572,8 @@ mod tests {
         );
     }
 
-    // TDD Bullet 3: "OTEL_TRACES_EXPORTER=none disables, even if a sink is set."
-    // Critical for the disabled-mode contract.
+    // TDD Bullet 3: "OTEL_TRACES_EXPORTER=none disables, even if a sink is
+    // set." Critical for the disabled-mode contract.
     #[test]
     fn otel_traces_exporter_none_disables_even_with_sink() {
         temp_env::with_vars(
@@ -599,8 +607,8 @@ mod tests {
     #[test]
     fn zipkin_endpoint_path_default_is_api_v2_spans() {
         // Zipkin is selected via the zipkin+ or zipkin:// scheme prefix. The
-        // `zipkin+` prefix is stripped so the stored URL is a real http(s) URL the HTTP
-        // client can POST to.
+        // `zipkin+` prefix is stripped so the stored URL is a real http(s) URL
+        // the HTTP client can POST to.
         let ep = resolve_endpoint("zipkin+https://zipkin.example.com").expect("valid Zipkin endpoint");
         match ep {
             Endpoint::Zipkin(u) => {
@@ -762,9 +770,9 @@ mod tests {
     // Fallible paths must error; convenience paths must silently disable.
     #[test]
     fn try_new_returns_error_on_sink_without_service_name() {
-        // We test the underlying Config state that the try_ constructors rely on.
-        // (Full Tracer::try_new integration tested via the public API in later
-        // bullets.)
+        // We test the underlying Config state that the try_ constructors rely
+        // on. (Full Tracer::try_new integration tested via the public API in
+        // later bullets.)
         temp_env::with_vars(
             [
                 ("OTEL_SINK_URI", Some("http://example.com")),
@@ -789,7 +797,8 @@ mod tests {
             || {
                 let c = Config::from_env();
                 // The convenience path will turn this into a disabled config
-                // (the actual disabling logic lives in Tracer::new / from_config).
+                // (the actual disabling logic lives in Tracer::new /
+                // from_config).
                 assert!(c.sink_uri.is_some());
                 assert!(c.service_name.is_none());
             },
@@ -880,7 +889,8 @@ mod tests {
         let c = Config::default()
             .with_resource_attributes([("service.version", "1.0.0"), ("deployment.environment", "dev")])
             .with_resource_attributes([("deployment.environment", "prod"), ("region", "us-east-1")]);
-        // Overridden key keeps a single entry with the new value; others survive.
+        // Overridden key keeps a single entry with the new value; others
+        // survive.
         assert_eq!(
             c.resource_attributes,
             vec![
@@ -893,8 +903,8 @@ mod tests {
 
     #[test]
     fn resource_attributes_never_store_service_name() {
-        // service.name promotes to the dedicated field (when unset) and is never
-        // kept among the resource attributes.
+        // service.name promotes to the dedicated field (when unset) and is
+        // never kept among the resource attributes.
         let c = Config::default().with_resource_attributes([("service.name", "promoted"), ("service.version", "9")]);
         assert_eq!(c.service_name.as_deref(), Some("promoted"));
         assert_eq!(
@@ -919,7 +929,8 @@ mod tests {
             Some("service.version=0.10.7, deployment.environment=prod , bogus, =noKey, noValue="),
             || {
                 let c = Config::from_env();
-                // Well-formed pairs kept (trimmed); malformed/empty entries skipped.
+                // Well-formed pairs kept (trimmed); malformed/empty entries
+                // skipped.
                 assert_eq!(
                     c.resource_attributes,
                     vec![

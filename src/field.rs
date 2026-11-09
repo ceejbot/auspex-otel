@@ -106,9 +106,9 @@ impl FieldVisitor<'_> {
             }
             "otel.status_code" => {
                 if let AttributeValue::String(s) = &value {
-                    // Look for a pending message (may have been recorded before or after
-                    // this status_code field). We steal it so the otel.* key never leaks
-                    // into exported attributes.
+                    // Look for a pending message (may have been recorded before
+                    // or after this status_code field). We steal it so the
+                    // otel.* key never leaks into exported attributes.
                     let message = self
                         .span
                         .attributes
@@ -119,7 +119,8 @@ impl FieldVisitor<'_> {
                             _ => None,
                         });
 
-                    // Remove the control field from attributes if it was present.
+                    // Remove the control field from attributes if it was
+                    // present.
                     if let Some(pos) = self
                         .span
                         .attributes

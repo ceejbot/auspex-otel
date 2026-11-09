@@ -55,13 +55,13 @@ impl TraceId {
     /// Create a `TraceId` from a 16-byte array.
     #[inline]
     #[allow(dead_code)]
-    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+    pub(crate) const fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(bytes)
     }
 
     /// Return the raw bytes.
     #[inline]
-    pub const fn as_bytes(&self) -> &[u8; 16] {
+    pub(crate) const fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }
 
@@ -132,7 +132,7 @@ impl FromStr for TraceId {
             return Err(ParseError::InvalidLength);
         }
         let mut bytes = [0u8; 16];
-        for (i, chunk) in s.as_bytes().chunks_exact(2).enumerate() {
+        for (i, chunk) in s.as_bytes().as_chunks::<2>().0.iter().enumerate() {
             let high = hex_digit(chunk[0]).map_err(|_| ParseError::InvalidHex)?;
             let low = hex_digit(chunk[1]).map_err(|_| ParseError::InvalidHex)?;
             bytes[i] = (high << 4) | low;
@@ -167,15 +167,16 @@ impl SpanId {
 
     #[inline]
     #[allow(dead_code)]
-    pub const fn from_bytes(bytes: [u8; 8]) -> Self {
+    pub(crate) const fn from_bytes(bytes: [u8; 8]) -> Self {
         Self(bytes)
     }
 
     #[inline]
-    pub const fn as_bytes(&self) -> &[u8; 8] {
+    pub(crate) const fn as_bytes(&self) -> &[u8; 8] {
         &self.0
     }
 
+    /// Returns true if this is the all-zero (invalid) span ID.
     #[inline]
     pub fn is_zero(self) -> bool {
         self.0 == [0; 8]
@@ -238,7 +239,7 @@ impl FromStr for SpanId {
             return Err(ParseError::InvalidLength);
         }
         let mut bytes = [0u8; 8];
-        for (i, chunk) in s.as_bytes().chunks_exact(2).enumerate() {
+        for (i, chunk) in s.as_bytes().as_chunks::<2>().0.iter().enumerate() {
             let high = hex_digit(chunk[0]).map_err(|_| ParseError::InvalidHex)?;
             let low = hex_digit(chunk[1]).map_err(|_| ParseError::InvalidHex)?;
             bytes[i] = (high << 4) | low;
@@ -259,10 +260,10 @@ impl FromStr for SpanId {
 /// headers.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct SpanContext {
-    pub trace_id: TraceId,
-    pub span_id: SpanId,
-    pub is_sampled: bool,
-    pub trace_state: Option<TraceState>,
+    pub(crate) trace_id: TraceId,
+    pub(crate) span_id: SpanId,
+    pub(crate) is_sampled: bool,
+    pub(crate) trace_state: Option<TraceState>,
 }
 
 impl SpanContext {
@@ -270,7 +271,7 @@ impl SpanContext {
     // constructors are currently exercised only by the propagation tests. They
     // are the natural builder vocabulary for the type; keep them.
     #[allow(dead_code)]
-    pub const fn new(trace_id: TraceId, span_id: SpanId, is_sampled: bool) -> Self {
+    pub(crate) const fn new(trace_id: TraceId, span_id: SpanId, is_sampled: bool) -> Self {
         Self {
             trace_id,
             span_id,
@@ -281,9 +282,30 @@ impl SpanContext {
 
     /// Attach a preserved `tracestate` value.
     #[allow(dead_code)]
-    pub fn with_trace_state(mut self, trace_state: TraceState) -> Self {
+    pub(crate) fn with_trace_state(mut self, trace_state: TraceState) -> Self {
         self.trace_state = Some(trace_state);
         self
+    }
+
+    /// The [`TraceId`] for this span context
+    pub const fn trace_id(&self) -> TraceId {
+        self.trace_id
+    }
+
+    /// The [`SpanId`] for this span context
+    pub const fn span_id(&self) -> SpanId {
+        self.span_id
+    }
+
+    /// Returns `true` if the `sampled` trace flag is set
+    pub const fn is_sampled(&self) -> bool {
+        self.is_sampled
+    }
+
+    /// The inbound W3C `tracestate` header value preserved on this context,
+    /// if the request carried one.
+    pub fn trace_state(&self) -> Option<&str> {
+        self.trace_state.as_ref().map(TraceState::as_str)
     }
 }
 

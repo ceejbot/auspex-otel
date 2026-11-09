@@ -33,13 +33,14 @@ where
 {
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
         // Parent resolution order (per Task 3.1 design):
-        // 1. Explicit parent provided to this span (e.g. span(parent = &parent) or
-        //    #[instrument(parent = ...)]). This must beat "current span".
+        // 1. Explicit parent provided to this span (e.g. span(parent = &parent)
+        //    or #[instrument(parent = ...)]). This must beat "current span".
         // 2. The current span in the tracing context (lookup_current).
         // 3. Remote parent injected by the HTTP middleware (Phase 5).
         // 4. Fresh trace (generate new TraceId).
 
-        // Explicit parent (from attrs) takes precedence over the current context span.
+        // Explicit parent (from attrs) takes precedence over the current
+        // context span.
         let parent_ctx = attrs
             .parent()
             .and_then(|explicit| {
@@ -51,8 +52,9 @@ where
                     .and_then(|s| s.extensions().get::<SpanContext>().cloned())
             });
 
-        // For a root span, adopt remote parent info the HTTP middleware recorded
-        // (the `remote.*` fields) so children inherit the inbound trace_id.
+        // For a root span, adopt remote parent info the HTTP middleware
+        // recorded (the `remote.*` fields) so children inherit the inbound
+        // trace_id.
         let remote_parent = if parent_ctx.is_none() {
             extract_remote_parent(attrs)
         } else {
@@ -72,7 +74,8 @@ where
 
         let span_id = SpanId::generate();
 
-        // Stored in the span's extensions so descendant spans can find their parent.
+        // Stored in the span's extensions so descendant spans can find their
+        // parent.
         let child_ctx = SpanContext {
             trace_id,
             span_id,
@@ -157,8 +160,9 @@ where
     }
 
     fn on_follows_from(&self, span: &span::Id, follows: &span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
-        // Link the originating span to the followed span (cross-trace works). If
-        // the followed span is already closed, we have no context and drop it.
+        // Link the originating span to the followed span (cross-trace works).
+        // If the followed span is already closed, we have no context and drop
+        // it.
         let followed_ctx = ctx
             .span(follows)
             .and_then(|s| s.extensions().get::<SpanContext>().cloned());
@@ -187,15 +191,16 @@ where
 
     fn on_close(&self, id: span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
         if let Some(span_ref) = ctx.span(&id) {
-            // Bind the extensions guard so its lock does not live in an `if let`
-            // scrutinee (clippy::significant_drop_in_scrutinee).
+            // Bind the extensions guard so its lock does not live in an `if
+            // let` scrutinee (clippy::significant_drop_in_scrutinee).
             let mut exts = span_ref.extensions_mut();
             if let Some(mut otel) = exts.remove::<OtelSpan>() {
                 otel.end();
 
                 let finished = otel.finish();
 
-                // Non-blocking send to the shared pipeline (drops + counts on full).
+                // Non-blocking send to the shared pipeline (drops + counts on
+                // full).
                 self.pipeline.send(finished);
             }
         }
@@ -492,21 +497,24 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || {
             let _span = tracing::info_span!("event-attr-test").entered();
 
-            // Do a bunch of span attribute recording (via child spans for simplicity).
+            // Do a bunch of span attribute recording (via child spans for
+            // simplicity).
             for i in 0..20 {
                 tracing::info_span!("filler").record("attr", i);
             }
 
             // Emit an event that itself has many attributes.
             // The core requirement (from the expanded Validate) is that this
-            // does not cause problems (panics, incorrect drop counts on the parent, etc.).
-            // Events have their own SmallVec storage precisely for this isolation.
+            // does not cause problems (panics, incorrect drop counts on the
+            // parent, etc.). Events have their own SmallVec storage precisely
+            // for this isolation.
             tracing::info!(a = 1, b = 2, c = 3, d = 4, e = 5, f = 6, g = 7, "fat event");
         });
 
         // As long as we reach here without panicking and can receive a span,
         // the basic isolation goal of this named test is satisfied for v0.1.
-        // A stricter version (exact dropped count accounting) can be added later.
+        // A stricter version (exact dropped count accounting) can be added
+        // later.
         let _ = receiver.recv();
     }
 
@@ -548,7 +556,8 @@ mod tests {
             tracing::error!("first error"); // on_event synthesizes Error status
 
             // Explicit later `otel.status_code = "ok"` drives the real
-            // on_record + FieldVisitor path and must win over the synthesized error.
+            // on_record + FieldVisitor path and must win over the synthesized
+            // error.
             span.record("otel.status_code", "ok");
         });
 
@@ -572,7 +581,8 @@ mod tests {
             let _root_guard = root.enter();
 
             let child = tracing::info_span!("child-with-follows");
-            // Real tracing API — this must trigger on_follows_from on our Layer.
+            // Real tracing API — this must trigger on_follows_from on our
+            // Layer.
             child.follows_from(&root);
 
             // Child drops first (LIFO), then root.
@@ -593,8 +603,8 @@ mod tests {
         assert_eq!(child_finished.links.len(), 1, "exactly one follows_from link expected");
         let link = &child_finished.links[0];
         assert_eq!(link.trace_id, child_finished.trace_id, "link stays in same trace");
-        // The followed span (root) had its own span_id; we don't assert exact value
-        // here beyond it being non-zero and different from child's (the
+        // The followed span (root) had its own span_id; we don't assert exact
+        // value here beyond it being non-zero and different from child's (the
         // presence + empty attrs is the point).
         assert!(!link.span_id.is_zero(), "followed span_id must be real");
         assert_ne!(link.span_id, child_finished.span_id, "link target != self");
@@ -611,36 +621,38 @@ mod tests {
         let subscriber = Registry::default().with(layer);
 
         let closed_span = tracing::info_span!("will-be-closed");
-        // Drop it immediately so its extensions (including SpanContext) are cleaned in
-        // on_close.
+        // Drop it immediately so its extensions (including SpanContext) are
+        // cleaned in on_close.
         drop(closed_span);
 
         tracing::subscriber::with_default(subscriber, || {
             let root = tracing::info_span!("root-following-closed");
             let _r = root.enter();
 
-            // This Id is still valid from the caller's perspective, but the span is gone
-            // from the subscriber's extensions. Our on_follows_from must ignore gracefully.
-            // We recreate a handle from the old Id? For simplicity we just exercise the
-            // code path by using a fresh span that never had our layer (impossible in this
-            // subscriber) — instead we rely on the closed one above via a different trick:
-            // actually call follows_from using the closed handle if tracing allows it.
-            // The cleanest reliable way in this harness: the lookup for a never-seen Id
-            // will simply return None from ctx.span(&some_id) for an Id from another
-            // subscriber. So we simulate "unknown" by the closed case + the
-            // fact that the Layer only ever sees Ids it created.
+            // This Id is still valid from the caller's perspective, but the
+            // span is gone from the subscriber's extensions. Our
+            // on_follows_from must ignore gracefully. We recreate a handle from
+            // the old Id? For simplicity we just exercise the code path by
+            // using a fresh span that never had our layer (impossible in this
+            // subscriber) — instead we rely on the closed one above via a
+            // different trick: actually call follows_from using the closed
+            // handle if tracing allows it. The cleanest reliable way in this
+            // harness: the lookup for a never-seen Id will simply return None
+            // from ctx.span(&some_id) for an Id from another subscriber. So we
+            // simulate "unknown" by the closed case + the fact that the Layer
+            // only ever sees Ids it created.
             //
-            // For this test we simply assert that creating a span and doing a follows_from
-            // to something that was never in *this* subscriber produces no link and no
-            // panic. The previous test already proves the happy path; here we
-            // just ensure the graceful-miss path does not blow up and does not
-            // create bogus links.
+            // For this test we simply assert that creating a span and doing a
+            // follows_from to something that was never in *this* subscriber
+            // produces no link and no panic. The previous test already proves
+            // the happy path; here we just ensure the graceful-miss path does
+            // not blow up and does not create bogus links.
             let unrelated = tracing::info_span!("unrelated");
             root.follows_from(&unrelated); // unrelated was created outside the subscriber
         });
 
-        // We should still only receive the root (and the unrelated never entered our
-        // layer).
+        // We should still only receive the root (and the unrelated never
+        // entered our layer).
         let finished = receiver.recv().expect("root");
         assert!(
             finished.links.is_empty(),
@@ -666,7 +678,8 @@ mod tests {
             }
         });
 
-        // Drain in drop order (targets first, root last) until we find the root.
+        // Drain in drop order (targets first, root last) until we find the
+        // root.
         let mut root_finished = None;
         for _ in 0..8 {
             if let Ok(f) = receiver.try_recv()

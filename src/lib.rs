@@ -80,6 +80,7 @@ mod config;
 mod error;
 mod exporter;
 mod pipeline;
+mod span_ext;
 
 pub(crate) mod context;
 pub(crate) mod field;
@@ -94,9 +95,11 @@ pub mod middleware; // Tracer (+ builder methods) lives here
 
 // Public API — flat and ergonomic at the crate root.
 pub use config::Config;
+pub use context::{SpanContext, SpanId, TraceId};
 pub use error::{ConfigError, InitError};
 pub use layer::OtelLayer;
 pub use middleware::{Tracer, TracerBuilder};
+pub use span_ext::AuspexSpanExt;
 use tracing_subscriber::Registry;
 // Used only by the ergonomic init() path.
 use tracing_subscriber::layer::SubscriberExt as _;
@@ -133,8 +136,9 @@ use tracing_subscriber::layer::SubscriberExt as _;
 pub fn init() -> Result<Tracer, InitError> {
     let tracer = Tracer::try_new()?;
 
-    // Build a minimal subscriber that only contains our OtelLayer (no fmt layer,
-    // no other noise). This is the "ergonomic path" promised by the design.
+    // Build a minimal subscriber that only contains our OtelLayer (no fmt
+    // layer, no other noise). This is the "ergonomic path" promised by the
+    // design.
     let otel_layer = tracer.subscriber_layer();
     let subscriber = Registry::default().with(otel_layer);
 
@@ -161,17 +165,26 @@ mod tests {
     #[test]
     fn public_api_surface_is_available_at_root() {
         // These would fail to compile if any re-export is missing or private.
-        use crate::{Config, ConfigError, InitError, OtelLayer, Tracer, TracerBuilder, init};
+        use crate::{
+            AuspexSpanExt, Config, ConfigError, InitError, OtelLayer, SpanContext, SpanId, TraceId, Tracer,
+            TracerBuilder, init,
+        };
 
-        // Also exercise the free function and the two main types users interact with.
+        // Also exercise the free function and the two main types users interact
+        // with.
         let _ = std::any::type_name::<Tracer>();
         let _ = std::any::type_name::<Config>();
         let _ = std::any::type_name::<OtelLayer>();
         let _ = std::any::type_name::<TracerBuilder>();
         let _ = std::any::type_name::<ConfigError>();
         let _ = std::any::type_name::<InitError>();
+        let _ = std::any::type_name::<SpanContext>();
+        let _ = std::any::type_name::<SpanId>();
+        let _ = std::any::type_name::<TraceId>();
+        let _ = std::any::type_name::<dyn AuspexSpanExt>();
 
-        // init() is callable in signature (we don't run it here to avoid side effects).
+        // init() is callable in signature (we don't run it here to avoid side
+        // effects).
         let _: fn() -> Result<Tracer, InitError> = init;
     }
 }

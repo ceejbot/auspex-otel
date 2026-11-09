@@ -42,7 +42,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build the tracer from the environment (OTEL_* / OTEL_SINK_URI).
     let tracer = auspex::Tracer::new();
 
-    // Explicit subscriber: auspex exports spans; the fmt layer prints to stdout.
+    // Explicit subscriber: auspex exports spans; the fmt layer prints to
+    // stdout.
     tracing_subscriber::registry()
         .with(tracer.subscriber_layer())
         .with(tracing_subscriber::fmt::layer())
@@ -72,8 +73,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
-    // Server has stopped accepting requests; drain in-flight spans before exit so
-    // a SIGTERM/Ctrl-C does not lose the final traces.
+    // Server has stopped accepting requests; drain in-flight spans before exit
+    // so a SIGTERM/Ctrl-C does not lose the final traces.
     if !tracer.shutdown().await {
         eprintln!("auspex: trace export did not fully drain within the timeout");
     }

@@ -158,7 +158,8 @@ mod tests {
 
         let exporter = std::sync::Arc::new(TestExporter::new());
         let (tx, rx) = mpsc::channel(16);
-        // Keep the signal sender alive so the drop-of-`tx` path drives the drain.
+        // Keep the signal sender alive so the drop-of-`tx` path drives the
+        // drain.
         let (_sd_tx, sd_rx) = oneshot::channel();
 
         let worker = crate::exporter::BatchWorker::new(
@@ -233,8 +234,8 @@ mod tests {
         // Drop the sender to trigger shutdown drain.
         drop(tx);
 
-        // Run the worker to completion. It will deliver any remaining partial batch
-        // on shutdown (the schedule delay window has already elapsed).
+        // Run the worker to completion. It will deliver any remaining partial
+        // batch on shutdown (the schedule delay window has already elapsed).
         worker.run().await;
 
         let batches = exporter.exported_batches();
@@ -274,8 +275,8 @@ mod tests {
 
         drop(tx);
 
-        // The worker should continue and complete the drain even though export keeps
-        // failing
+        // The worker should continue and complete the drain even though export
+        // keeps failing
         worker.run().await;
 
         // We don't assert on the (failed) batches here — the important thing is
@@ -309,14 +310,16 @@ mod tests {
             tx.send(span.finish()).await.unwrap();
         }
 
-        // Request shutdown WITHOUT dropping `tx`: only the signal triggers drain.
+        // Request shutdown WITHOUT dropping `tx`: only the signal triggers
+        // drain.
         sd_tx.send(()).unwrap();
         worker.run().await;
 
         let total: usize = exporter.exported_batches().iter().map(Vec::len).sum();
         assert_eq!(total, 3, "all buffered spans should be drained on shutdown signal");
 
-        // `tx` was alive the whole time; the drain did not depend on dropping it.
+        // `tx` was alive the whole time; the drain did not depend on dropping
+        // it.
         drop(tx);
     }
 
