@@ -490,7 +490,11 @@ impl Config {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::match_wildcard_for_single_variants)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::match_wildcard_for_single_variants,
+    clippy::assert_is_empty
+)]
 mod tests {
     use super::*;
 
