@@ -55,13 +55,13 @@ impl TraceId {
     /// Create a `TraceId` from a 16-byte array.
     #[inline]
     #[allow(dead_code)]
-    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+    pub(crate) const fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(bytes)
     }
 
     /// Return the raw bytes.
     #[inline]
-    pub const fn as_bytes(&self) -> &[u8; 16] {
+    pub(crate) const fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }
 
@@ -167,15 +167,16 @@ impl SpanId {
 
     #[inline]
     #[allow(dead_code)]
-    pub const fn from_bytes(bytes: [u8; 8]) -> Self {
+    pub(crate) const fn from_bytes(bytes: [u8; 8]) -> Self {
         Self(bytes)
     }
 
     #[inline]
-    pub const fn as_bytes(&self) -> &[u8; 8] {
+    pub(crate) const fn as_bytes(&self) -> &[u8; 8] {
         &self.0
     }
 
+    /// Returns true if this is the all-zero (invalid) span ID.
     #[inline]
     pub fn is_zero(self) -> bool {
         self.0 == [0; 8]
