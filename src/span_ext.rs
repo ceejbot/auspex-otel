@@ -1,8 +1,13 @@
-//! Read auspex's trace context back out of a `tracing` span.
+//! Read auspex's trace context back out of a `tracing` span, and write it
+//! into outbound requests.
 
+use http::header::{HeaderMap, HeaderName, HeaderValue};
 use tracing_subscriber::registry::LookupSpan as _;
 
 use crate::SpanContext;
+
+const TRACEPARENT: HeaderName = HeaderName::from_static("traceparent");
+const TRACESTATE: HeaderName = HeaderName::from_static("tracestate");
 
 /// Extension trait exposing the [`SpanContext`] auspex recorded on a
 /// [`tracing::Span`].
@@ -28,6 +33,29 @@ pub trait AuspexSpanExt {
     /// let trace_id = Span::current().span_context().map(|ctx| ctx.trace_id());
     /// ```
     fn span_context(&self) -> Option<SpanContext>;
+
+    /// Writes this span's trace context into outbound request headers so the
+    /// downstream service's spans join this trace.
+    ///
+    /// Sets `traceparent` naming this span as the parent, replacing any value
+    /// already present. `tracestate` is set when the inbound request carried
+    /// one and removed otherwise, so the pair always describes this span.
+    /// Does nothing when auspex is not tracking the span, which keeps the
+    /// disabled tracer free here too.
+    ///
+    /// [`http::HeaderMap`] is the type reqwest and hyper use, so the map goes
+    /// straight onto the outbound request.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use auspex::AuspexSpanExt;
+    ///
+    /// let mut headers = reqwest::header::HeaderMap::new();
+    /// tracing::Span::current().inject_headers(&mut headers);
+    /// client.get(url).headers(headers).send().await?;
+    /// ```
+    fn inject_headers(&self, headers: &mut HeaderMap);
 }
 
 impl AuspexSpanExt for tracing::Span {
@@ -40,6 +68,27 @@ impl AuspexSpanExt for tracing::Span {
             span.extensions().get::<SpanContext>().cloned()
         })
         .flatten()
+    }
+
+    fn inject_headers(&self, headers: &mut HeaderMap) {
+        let Some(ctx) = self.span_context() else {
+            return;
+        };
+
+        // The formatter emits only lowercase hex and dashes, so this cannot
+        // fail; the guard keeps `unwrap_used` honest without a panic path.
+        if let Ok(value) = HeaderValue::from_str(&ctx.traceparent_header()) {
+            headers.insert(TRACEPARENT, value);
+        }
+
+        match ctx.trace_state().and_then(|ts| HeaderValue::from_str(ts).ok()) {
+            Some(value) => {
+                headers.insert(TRACESTATE, value);
+            }
+            None => {
+                headers.remove(TRACESTATE);
+            }
+        }
     }
 }
 
@@ -104,6 +153,105 @@ mod test {
                 assert_eq!(a_ctx.trace_id(), current_ctx.trace_id(), "a is the current trace");
             });
         });
+    }
+
+    fn header_str<'a>(headers: &'a http::HeaderMap, name: &str) -> Option<&'a str> {
+        headers.get(name).and_then(|v| v.to_str().ok())
+    }
+
+    #[test]
+    fn test_inject_headers_names_this_span_as_parent() {
+        let subscriber = tracing_subscriber::Registry::default().with(auspex_layer());
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("outbound");
+            let ctx = span.span_context().expect("tracked span");
+
+            let mut headers = http::HeaderMap::new();
+            span.inject_headers(&mut headers);
+
+            let traceparent = header_str(&headers, "traceparent").expect("traceparent set");
+            assert_eq!(traceparent, ctx.traceparent_header());
+            let parsed = crate::propagation::parse_traceparent(traceparent).expect("parses");
+            assert_eq!(parsed.trace_id, ctx.trace_id());
+            assert_eq!(parsed.parent_id, ctx.span_id(), "the injecting span is the parent");
+            assert!(parsed.flags.is_sampled());
+            assert!(
+                headers.get("tracestate").is_none(),
+                "no inbound tracestate, none emitted"
+            );
+        });
+    }
+
+    #[test]
+    fn test_inject_headers_replaces_stale_values() {
+        let subscriber = tracing_subscriber::Registry::default().with(auspex_layer());
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("outbound");
+            let mut headers = http::HeaderMap::new();
+            headers.insert(
+                "traceparent",
+                http::HeaderValue::from_static("00-11111111111111111111111111111111-2222222222222222-01"),
+            );
+            headers.insert("tracestate", http::HeaderValue::from_static("stale=1"));
+
+            span.inject_headers(&mut headers);
+
+            let ctx = span.span_context().expect("tracked span");
+            assert_eq!(
+                header_str(&headers, "traceparent"),
+                Some(ctx.traceparent_header().as_str())
+            );
+            assert!(
+                headers.get("tracestate").is_none(),
+                "a tracestate that does not belong to this span is removed"
+            );
+        });
+    }
+
+    #[test]
+    fn test_inject_headers_forwards_inbound_tracestate() {
+        let subscriber = tracing_subscriber::Registry::default().with(auspex_layer());
+
+        tracing::subscriber::with_default(subscriber, || {
+            // Mirror what the HTTP middleware records for a request that
+            // arrived with traceparent + tracestate.
+            let span = tracing::info_span!(
+                "root",
+                "remote.trace_id" = "4bf92f3577b34da6a3ce929d0e0e4736",
+                "remote.parent_span_id" = "00f067aa0ba902b7",
+                "remote.sampled" = false,
+                "remote.trace_state" = "congo=t61rcWkgMzE,rojo=00f067aa0ba902b7"
+            );
+            let ctx = span.span_context().expect("tracked span");
+
+            let mut headers = http::HeaderMap::new();
+            span.inject_headers(&mut headers);
+
+            let parsed =
+                crate::propagation::parse_traceparent(header_str(&headers, "traceparent").expect("traceparent set"))
+                    .expect("parses");
+            assert_eq!(parsed.trace_id.to_string(), "4bf92f3577b34da6a3ce929d0e0e4736");
+            assert_eq!(parsed.parent_id, ctx.span_id(), "our span, not the remote parent");
+            assert!(!parsed.flags.is_sampled(), "inbound unsampled stays unsampled");
+            assert_eq!(
+                header_str(&headers, "tracestate"),
+                Some("congo=t61rcWkgMzE,rojo=00f067aa0ba902b7")
+            );
+        });
+    }
+
+    #[test]
+    fn test_inject_headers_is_a_no_op_without_auspex() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-keep", http::HeaderValue::from_static("yes"));
+
+        tracing::Span::none().inject_headers(&mut headers);
+        tracing::info_span!("untracked").inject_headers(&mut headers);
+
+        assert_eq!(headers.len(), 1);
+        assert!(headers.get("traceparent").is_none());
     }
 
     #[test]

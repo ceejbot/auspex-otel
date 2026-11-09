@@ -1326,4 +1326,92 @@ mod tests {
             span.attributes
         );
     }
+
+    /// End to end: a request arrives with W3C context, the handler injects
+    /// outbound headers, and those headers continue the inbound trace with
+    /// the root HTTP span as parent.
+    #[cfg(feature = "axum")]
+    #[tokio::test]
+    async fn outbound_injection_continues_the_inbound_trace() {
+        use axum::Router;
+        use axum::routing::get;
+        use http::Request;
+        use tower::ServiceExt;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        use crate::AuspexSpanExt;
+
+        let config = Config::default()
+            .with_service_name("outbound-test")
+            .with_sink_uri("http://example.com");
+
+        let (pipeline, receiver) = Pipeline::new_for_test(config);
+        let tracer = Tracer {
+            inner: pipeline.clone(),
+        };
+
+        let layer = tracer.subscriber_layer();
+        let subscriber = tracing_subscriber::Registry::default().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        // The handler does what an upstream call site does: inject into a
+        // fresh header map, then (here) echo it back so the test can see it.
+        let app = Router::new()
+            .route(
+                "/out",
+                get(|| async {
+                    let mut headers = http::HeaderMap::new();
+                    tracing::Span::current().inject_headers(&mut headers);
+                    let get = |name: &str| {
+                        headers
+                            .get(name)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or_default()
+                            .to_owned()
+                    };
+                    format!("{}|{}", get("traceparent"), get("tracestate"))
+                }),
+            )
+            .layer(tracer);
+
+        let req = Request::builder()
+            .uri("/out")
+            .header("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+            .header("tracestate", "congo=t61rcWkgMzE")
+            .body(axum::body::Body::empty())
+            .expect("valid test request");
+
+        let response = app.oneshot(req).await.expect("test request should respond");
+        assert_eq!(response.status(), http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let body = String::from_utf8(body.to_vec()).expect("utf8 body");
+        let (outbound_traceparent, outbound_tracestate) = body.split_once('|').expect("two fields");
+
+        let mut received = Vec::new();
+        while let Ok(f) = receiver.try_recv() {
+            received.push(f);
+        }
+        let root = root_http_span(&received);
+
+        let parsed = crate::propagation::parse_traceparent(outbound_traceparent).expect("valid outbound traceparent");
+        assert_eq!(
+            parsed.trace_id.to_string(),
+            "4bf92f3577b34da6a3ce929d0e0e4736",
+            "outbound call stays in the inbound trace"
+        );
+        assert_eq!(parsed.trace_id, root.trace_id);
+        assert_eq!(
+            parsed.parent_id, root.span_id,
+            "the root HTTP span is the outbound parent"
+        );
+        assert_ne!(
+            parsed.parent_id.to_string(),
+            "00f067aa0ba902b7",
+            "the inbound parent is not forwarded as our parent"
+        );
+        assert!(parsed.flags.is_sampled());
+        assert_eq!(outbound_tracestate, "congo=t61rcWkgMzE");
+    }
 }

@@ -8,7 +8,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use crate::propagation::TraceState;
+use crate::propagation::{TraceFlags, TraceParent, TraceState};
 
 /// Error returned when parsing a `TraceId` or `SpanId` from hex or bytes.
 ///
@@ -307,6 +307,24 @@ impl SpanContext {
     pub fn trace_state(&self) -> Option<&str> {
         self.trace_state.as_ref().map(TraceState::as_str)
     }
+
+    /// The value for an outbound W3C `traceparent` header that names this
+    /// span as the parent: `00-{trace_id}-{span_id}-{flags}`.
+    ///
+    /// Prefer [`AuspexSpanExt::inject_headers`](crate::AuspexSpanExt::inject_headers)
+    /// when the carrier is an [`http::HeaderMap`]. This method is for other
+    /// carriers: message metadata, gRPC, a job queue payload.
+    pub fn traceparent_header(&self) -> String {
+        self.traceparent().to_string()
+    }
+
+    pub(crate) const fn traceparent(&self) -> TraceParent {
+        TraceParent {
+            trace_id: self.trace_id,
+            parent_id: self.span_id,
+            flags: TraceFlags::from_sampled(self.is_sampled),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -413,6 +431,24 @@ mod proptests {
             let s = id.to_string();
             let parsed: SpanId = s.parse().unwrap();
             prop_assert_eq!(parsed, id);
+        }
+
+        /// The outbound header must parse back to the same ids, name this span
+        /// as the parent, and carry exactly the sampled decision.
+        #[test]
+        fn traceparent_header_roundtrips_through_the_inbound_parser(
+            trace: [u8; 16],
+            span: [u8; 8],
+            sampled: bool,
+        ) {
+            prop_assume!(trace.iter().any(|&b| b != 0));
+            prop_assume!(span.iter().any(|&b| b != 0));
+            let ctx = SpanContext::new(TraceId::from_bytes(trace), SpanId::from_bytes(span), sampled);
+            let header = ctx.traceparent_header();
+            let parsed = crate::propagation::parse_traceparent(&header).unwrap();
+            prop_assert_eq!(parsed.trace_id, ctx.trace_id());
+            prop_assert_eq!(parsed.parent_id, ctx.span_id());
+            prop_assert_eq!(parsed.flags.is_sampled(), sampled);
         }
     }
 }

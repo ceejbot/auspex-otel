@@ -54,6 +54,15 @@
 //! tracer.shutdown().await; // drain + export before exit
 //! ```
 //!
+//! ## Outbound propagation and log correlation
+//!
+//! [`AuspexSpanExt`] adds two methods to [`tracing::Span`]:
+//! [`inject_headers`](AuspexSpanExt::inject_headers) writes W3C `traceparent`
+//! / `tracestate` into an outbound [`http::HeaderMap`] so the downstream
+//! service joins the trace, and [`span_context`](AuspexSpanExt::span_context)
+//! returns the ids for log records. Both do nothing when the tracer is
+//! disabled.
+//!
 //! ## Cargo features
 //!
 //! - `ring` *(default)* — use [ring](https://docs.rs/ring) as the rustls crypto

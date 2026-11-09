@@ -1,9 +1,7 @@
-//! Pure W3C `traceparent` header parser and formatter (v0.1 supports only
-//! version `00`).
+//! Pure W3C `traceparent` header parser and formatter (version `00` only).
 //!
-//! This module is intentionally small and allocation-free on the happy path
-//! (except for the `Display` / `to_string` formatter used in tests and future
-//! outbound propagation).
+//! Parsing is allocation-free. The `Display` formatter allocates once per
+//! outbound header, in `SpanContext::traceparent_header`.
 
 use std::fmt;
 

@@ -176,7 +176,17 @@ Each HTTP request becomes a root span with OTEL-semantic attributes:
 
 The exported span name is `{method} {route}` when a low-cardinality route is available, otherwise `{method}`.
 
-W3C `traceparent` / `tracestate` are extracted from inbound requests so traces join across services, and the sampled flag is preserved.
+W3C `traceparent` / `tracestate` are extracted from inbound requests so traces join across services, and the sampled flag is preserved. To continue the trace into your own outbound calls, inject the current span into the request headers. `reqwest` and `hyper` both use `http::HeaderMap`, so the map goes straight onto the request:
+
+```rust
+use auspex::AuspexSpanExt;
+
+let mut headers = reqwest::header::HeaderMap::new();
+tracing::Span::current().inject_headers(&mut headers);
+client.get(url).headers(headers).send().await?;
+```
+
+For log correlation, `Span::current().span_context()` returns the current `trace_id` and `span_id`, or `None` when auspex is not tracking the span. Both calls are no-ops when the tracer is disabled.
 
 Add your own context with the normal `tracing` facade — `#[instrument]`, `info_span!`, `Span::record`, events, and `follows_from` (exported as OTEL span links).
 
