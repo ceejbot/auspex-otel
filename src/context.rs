@@ -301,6 +301,12 @@ impl SpanContext {
     pub const fn is_sampled(&self) -> bool {
         self.is_sampled
     }
+
+    /// The inbound W3C `tracestate` header value preserved on this context,
+    /// if the request carried one.
+    pub fn trace_state(&self) -> Option<&str> {
+        self.trace_state.as_ref().map(TraceState::as_str)
+    }
 }
 
 #[cfg(test)]

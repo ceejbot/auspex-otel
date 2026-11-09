@@ -1,12 +1,21 @@
+//! Read auspex's trace context back out of a `tracing` span.
+
 use tracing_subscriber::registry::LookupSpan as _;
 
 use crate::SpanContext;
 
-/// Utility to allow tracing [`Span`]s to return Auspex [`SpanContext`]s.
+/// Extension trait exposing the [`SpanContext`] auspex recorded on a
+/// [`tracing::Span`].
 ///
-/// [`Span`]: tracing::Span
+/// The main use is log correlation: a JSON log formatter can stamp every
+/// record with the current `trace_id` and `span_id` so logs and traces join
+/// in the backend.
 pub trait AuspexSpanExt {
-    /// Extracts an Auspex [`SpanContext`] from `self`, if present.
+    /// Returns the [`SpanContext`] auspex recorded on this span, if any.
+    ///
+    /// `None` when the span is disabled, has already closed, or lives in a
+    /// subscriber that does not include auspex's layer
+    /// ([`Tracer::subscriber_layer`](crate::Tracer::subscriber_layer)).
     ///
     /// # Examples
     ///
@@ -14,8 +23,8 @@ pub trait AuspexSpanExt {
     /// use auspex::AuspexSpanExt;
     /// use tracing::Span;
     ///
-    /// // Get the current trace_id context from the current tracing span,
-    /// // or `None` if the span is not instrumented by Auspex
+    /// // The trace id of the current span, or `None` when auspex is not
+    /// // tracking it.
     /// let trace_id = Span::current().span_context().map(|ctx| ctx.trace_id());
     /// ```
     fn span_context(&self) -> Option<SpanContext>;
@@ -24,6 +33,8 @@ pub trait AuspexSpanExt {
 impl AuspexSpanExt for tracing::Span {
     fn span_context(&self) -> Option<SpanContext> {
         self.with_subscriber(|(id, dispatch)| {
+            // `downcast_ref` sees through `Layered` wrappers, so this works for
+            // any subscriber built on `tracing_subscriber::registry()`.
             let registry = dispatch.downcast_ref::<tracing_subscriber::Registry>()?;
             let span = registry.span(id)?;
             span.extensions().get::<SpanContext>().cloned()
@@ -39,6 +50,14 @@ mod test {
     use crate::pipeline::Pipeline;
     use crate::{AuspexSpanExt, Config, OtelLayer};
 
+    fn auspex_layer() -> OtelLayer {
+        let config = Config::default()
+            .with_service_name("span-ext-test")
+            .with_sink_uri("http://localhost:4318");
+        let (pipeline, _rx) = Pipeline::new_for_test(config);
+        OtelLayer::from_pipeline(pipeline)
+    }
+
     #[test]
     fn test_span_context_returns_none_when_not_instrumented() {
         let span_a = tracing::info_span!("a");
@@ -46,12 +65,21 @@ mod test {
     }
 
     #[test]
+    fn test_span_context_returns_none_without_auspex_layer() {
+        assert!(tracing::Span::none().span_context().is_none());
+
+        // A real subscriber that simply does not include auspex.
+        let subscriber =
+            tracing_subscriber::Registry::default().with(tracing_subscriber::fmt::layer().with_writer(std::io::sink));
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("untracked");
+            assert!(span.span_context().is_none());
+        });
+    }
+
+    #[test]
     fn test_span_context_returns_correct_context() {
-        let config = Config::default()
-            .with_service_name("span-ext-test")
-            .with_sink_uri("http://localhost:4318");
-        let (pipeline, _rx) = Pipeline::new_for_test(config);
-        let subscriber = tracing_subscriber::Registry::default().with(OtelLayer::from_pipeline(pipeline));
+        let subscriber = tracing_subscriber::Registry::default().with(auspex_layer());
 
         tracing::subscriber::with_default(subscriber, || {
             // no span was entered, current has no trace_id
@@ -75,6 +103,26 @@ mod test {
                 assert_eq!(a_ctx.span_id(), current_ctx.span_id(), "a is the current span");
                 assert_eq!(a_ctx.trace_id(), current_ctx.trace_id(), "a is the current trace");
             });
+        });
+    }
+
+    #[test]
+    fn test_span_context_sees_through_additional_layers() {
+        // Consumers stack filters and formatters around auspex's layer; the
+        // registry downcast must still succeed.
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(auspex_layer())
+            .with(tracing_subscriber::fmt::layer().with_writer(std::io::sink));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("layered");
+            let ctx = span
+                .span_context()
+                .expect("layered subscriber still exposes the context");
+            assert!(!ctx.trace_id().is_zero());
+            assert!(!ctx.span_id().is_zero());
+            assert!(ctx.is_sampled());
+            assert!(ctx.trace_state().is_none());
         });
     }
 }
