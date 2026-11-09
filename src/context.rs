@@ -259,10 +259,10 @@ impl FromStr for SpanId {
 /// headers.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct SpanContext {
-    pub trace_id: TraceId,
-    pub span_id: SpanId,
-    pub is_sampled: bool,
-    pub trace_state: Option<TraceState>,
+    pub(crate) trace_id: TraceId,
+    pub(crate) span_id: SpanId,
+    pub(crate) is_sampled: bool,
+    pub(crate) trace_state: Option<TraceState>,
 }
 
 impl SpanContext {
@@ -270,7 +270,7 @@ impl SpanContext {
     // constructors are currently exercised only by the propagation tests. They
     // are the natural builder vocabulary for the type; keep them.
     #[allow(dead_code)]
-    pub const fn new(trace_id: TraceId, span_id: SpanId, is_sampled: bool) -> Self {
+    pub(crate) const fn new(trace_id: TraceId, span_id: SpanId, is_sampled: bool) -> Self {
         Self {
             trace_id,
             span_id,
@@ -281,9 +281,24 @@ impl SpanContext {
 
     /// Attach a preserved `tracestate` value.
     #[allow(dead_code)]
-    pub fn with_trace_state(mut self, trace_state: TraceState) -> Self {
+    pub(crate) fn with_trace_state(mut self, trace_state: TraceState) -> Self {
         self.trace_state = Some(trace_state);
         self
+    }
+
+    /// The [`TraceId`] for this span context
+    pub const fn trace_id(&self) -> TraceId {
+        self.trace_id
+    }
+
+    /// The [`SpanId`] for this span context
+    pub const fn span_id(&self) -> SpanId {
+        self.span_id
+    }
+
+    /// Returns `true` if the `sampled` trace flag is set
+    pub const fn is_sampled(&self) -> bool {
+        self.is_sampled
     }
 }
 
