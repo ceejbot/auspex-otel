@@ -81,9 +81,9 @@ serde_json = "1"
 # Optional: only the `compare_otel` benchmark uses these. Feature-gated rather
 # than dev-dependencies so the OpenTelemetry SDK is never compiled into a normal
 # build — avoiding that tree is the entire point of auspex.
-opentelemetry = { version = "0.32", optional = true }
-opentelemetry_sdk = { version = "0.32", optional = true }
-tracing-opentelemetry = { version = "0.33", optional = true }
+opentelemetry = { version = "0.33", optional = true }
+opentelemetry_sdk = { version = "0.33", optional = true }
+tracing-opentelemetry = { version = "0.34", optional = true }
 
 [dev-dependencies]
 proptest = "1.5"
