@@ -132,7 +132,7 @@ impl FromStr for TraceId {
             return Err(ParseError::InvalidLength);
         }
         let mut bytes = [0u8; 16];
-        for (i, chunk) in s.as_bytes().chunks_exact(2).enumerate() {
+        for (i, chunk) in s.as_bytes().as_chunks::<2>().0.iter().enumerate() {
             let high = hex_digit(chunk[0]).map_err(|_| ParseError::InvalidHex)?;
             let low = hex_digit(chunk[1]).map_err(|_| ParseError::InvalidHex)?;
             bytes[i] = (high << 4) | low;
@@ -239,7 +239,7 @@ impl FromStr for SpanId {
             return Err(ParseError::InvalidLength);
         }
         let mut bytes = [0u8; 8];
-        for (i, chunk) in s.as_bytes().chunks_exact(2).enumerate() {
+        for (i, chunk) in s.as_bytes().as_chunks::<2>().0.iter().enumerate() {
             let high = hex_digit(chunk[0]).map_err(|_| ParseError::InvalidHex)?;
             let low = hex_digit(chunk[1]).map_err(|_| ParseError::InvalidHex)?;
             bytes[i] = (high << 4) | low;
