@@ -2,7 +2,7 @@
 name = "auspex-otel"
 version = "0.6.0"
 edition = "2024"
-rust-version = "1.90"
+rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ceejbot/auspex-otel"
 description = "Extremely opinionated, lean, high-performance OTEL tracing middleware for axum"

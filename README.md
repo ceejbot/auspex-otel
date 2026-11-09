@@ -198,7 +198,7 @@ See [`examples/README.md`](examples/README.md) for the full walkthrough.
 
 ## Status & compatibility
 
-- MSRV **1.90** (Rust edition 2024).
+- MSRV **1.99** (Rust edition 2024).
 - v0.1: OTLP/HTTP and Zipkin v2 exporters, W3C context propagation, events,
   links, and HTTP error status. OTLP/gRPC, metrics, and logs are out of scope.
 

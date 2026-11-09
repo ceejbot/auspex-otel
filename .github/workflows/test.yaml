@@ -22,7 +22,7 @@ jobs:
         runs-on: ubuntu-latest
         strategy:
             matrix:
-                rust: [stable, "1.90"]
+                rust: [stable, "1.99"]
             fail-fast: false
         env:
             SCCACHE_GHA_ENABLED: "true"
