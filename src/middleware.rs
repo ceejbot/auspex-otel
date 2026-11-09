@@ -455,8 +455,11 @@ where
             root_span.record("server.address", host);
         }
 
-        // Only a matched (low-cardinality) route becomes `http.route`; raw
-        // paths never do — they stay in `url.path`.
+        // Only the matched route template is exported, as both `http.route`
+        // and `url.path`. The raw request path is never recorded: path
+        // parameters are identifiers, and in this crate's home domain
+        // identifiers are often protected health information. An unmatched
+        // request therefore carries no path at all.
         #[cfg(feature = "axum")]
         if let Some(r) = req
             .extensions()
@@ -464,6 +467,7 @@ where
             .map(axum::extract::MatchedPath::as_str)
         {
             root_span.record("http.route", r);
+            root_span.record("url.path", r);
         }
 
         // Deliberately not entered here: the ResponseFuture owns the span and
@@ -497,6 +501,10 @@ impl<S> TracerService<S> {
     /// slot. `Empty` fields are not visited at creation, so they add no
     /// attribute until something records them.
     ///
+    /// `url.path` is one of those slots on purpose: it is filled with the
+    /// matched route template, never the raw request path, so an unmatched
+    /// request exports no path.
+    ///
     /// The `remote.*` fields are different: they must carry real values *at
     /// creation*, because the layer reads them in `on_new_span` to adopt the
     /// remote parent — recording them later would be too late.
@@ -509,7 +517,6 @@ impl<S> TracerService<S> {
         use tracing::field::Empty;
 
         let method = req.method().as_str();
-        let path = req.uri().path();
         let query = sanitize_query(req.uri().query().unwrap_or(""));
         let scheme = req.uri().scheme_str().unwrap_or("http");
         let protocol = "http";
@@ -540,7 +547,6 @@ impl<S> TracerService<S> {
             tracing::info_span!(
                 "HTTP request",
                 "http.request.method" = method,
-                "url.path" = path,
                 "url.query" = query.as_ref(),
                 "url.scheme" = scheme,
                 "network.protocol.name" = protocol,
@@ -552,6 +558,7 @@ impl<S> TracerService<S> {
                 "remote.trace_state" = trace_state,
                 // Late-fill slots (declared so post-construction record() works):
                 "http.route" = Empty,
+                "url.path" = Empty,
                 "http.response.status_code" = Empty,
                 "otel.status_code" = Empty,
                 "error.type" = Empty,
@@ -563,7 +570,6 @@ impl<S> TracerService<S> {
             tracing::info_span!(
                 "HTTP request",
                 "http.request.method" = method,
-                "url.path" = path,
                 "url.query" = query.as_ref(),
                 "url.scheme" = scheme,
                 "network.protocol.name" = protocol,
@@ -572,6 +578,7 @@ impl<S> TracerService<S> {
                 // Late-fill slots (declared so post-construction record()
                 // works):
                 "http.route" = Empty,
+                "url.path" = Empty,
                 "http.response.status_code" = Empty,
                 "otel.status_code" = Empty,
                 "error.type" = Empty,
@@ -1413,5 +1420,103 @@ mod tests {
         );
         assert!(parsed.flags.is_sampled());
         assert_eq!(outbound_tracestate, "congo=t61rcWkgMzE");
+    }
+
+    #[cfg(feature = "axum")]
+    fn string_attr<'a>(span: &'a crate::span::FinishedSpan, key: &str) -> Option<&'a str> {
+        span.attributes.iter().find_map(|(k, v)| match v {
+            crate::span::AttributeValue::String(s) if k == key => Some(s.as_ref()),
+            _ => None,
+        })
+    }
+
+    #[cfg(feature = "axum")]
+    fn any_string_attr_contains(span: &crate::span::FinishedSpan, needle: &str) -> bool {
+        span.attributes.iter().any(|(_, v)| match v {
+            crate::span::AttributeValue::String(s) => s.contains(needle),
+            _ => false,
+        })
+    }
+
+    /// `url.path` carries the route template, so a path parameter never
+    /// reaches the exporter in any attribute.
+    #[cfg(feature = "axum")]
+    #[tokio::test]
+    async fn url_path_is_the_route_template_not_the_raw_path() {
+        use axum::Router;
+        use axum::routing::get;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let config = Config::default()
+            .with_service_name("url-path-test")
+            .with_sink_uri("http://example.com");
+        let (pipeline, receiver) = Pipeline::new_for_test(config);
+        let tracer = Tracer {
+            inner: pipeline.clone(),
+        };
+        let subscriber = tracing_subscriber::Registry::default().with(tracer.subscriber_layer());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let app = Router::new()
+            .route("/members/{member_id}/claims/{claim_id}", get(|| async { "ok" }))
+            .layer(tracer);
+
+        let (status, received) = drive_and_collect(app, receiver, "/members/M-998877/claims/C-4411").await;
+        assert_eq!(status, 200);
+        let span = root_http_span(&received);
+
+        assert_eq!(
+            string_attr(span, "url.path"),
+            Some("/members/{member_id}/claims/{claim_id}")
+        );
+        assert_eq!(
+            string_attr(span, "http.route"),
+            Some("/members/{member_id}/claims/{claim_id}")
+        );
+        assert_eq!(span.name, "GET /members/{member_id}/claims/{claim_id}");
+        assert!(
+            !any_string_attr_contains(span, "M-998877") && !any_string_attr_contains(span, "C-4411"),
+            "path parameters must not appear in any attribute: {:?}",
+            span.attributes
+        );
+    }
+
+    /// With no matched route there is no template, so the span carries no
+    /// path at all rather than falling back to the raw one.
+    #[cfg(feature = "axum")]
+    #[tokio::test]
+    async fn unmatched_request_exports_no_path() {
+        use axum::Router;
+        use axum::routing::get;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let config = Config::default()
+            .with_service_name("no-route-test")
+            .with_sink_uri("http://example.com");
+        let (pipeline, receiver) = Pipeline::new_for_test(config);
+        let tracer = Tracer {
+            inner: pipeline.clone(),
+        };
+        let subscriber = tracing_subscriber::Registry::default().with(tracer.subscriber_layer());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let app = Router::new().route("/known", get(|| async { "ok" })).layer(tracer);
+
+        let (status, received) = drive_and_collect(app, receiver, "/patients/P-31337/notes").await;
+        assert_eq!(status, 404);
+        let span = root_http_span(&received);
+
+        assert!(
+            string_attr(span, "url.path").is_none(),
+            "no route, no url.path: {:?}",
+            span.attributes
+        );
+        assert!(string_attr(span, "http.route").is_none());
+        assert_eq!(span.name, "GET");
+        assert!(
+            !any_string_attr_contains(span, "P-31337"),
+            "the raw path must not leak into any attribute: {:?}",
+            span.attributes
+        );
     }
 }

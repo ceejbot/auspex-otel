@@ -19,6 +19,7 @@ fn is_protected_http_attribute(key: &str) -> bool {
     key == "http.response.status_code"
         || key == "http.response.body.size"
         || key == "http.route"
+        || key == "url.path"
         || key == "error.type"
         || key.starts_with("http.response.header.")
 }
