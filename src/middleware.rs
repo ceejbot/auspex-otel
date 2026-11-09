@@ -176,7 +176,7 @@ impl TracerBuilder {
 }
 
 fn is_valid_duration_knob(duration: std::time::Duration) -> bool {
-    !duration.is_zero() && duration < std::time::Duration::from_secs(60 * 60)
+    !duration.is_zero() && duration < std::time::Duration::from_hours(1)
 }
 
 impl Default for Tracer {
@@ -811,9 +811,9 @@ mod tests {
                     .with_max_batch_size(0)
                     .with_max_batch_size(10_001)
                     .with_schedule_delay(Duration::ZERO)
-                    .with_schedule_delay(Duration::from_secs(60 * 60))
+                    .with_schedule_delay(Duration::from_hours(1))
                     .with_shutdown_timeout(Duration::ZERO)
-                    .with_shutdown_timeout(Duration::from_secs(60 * 60))
+                    .with_shutdown_timeout(Duration::from_hours(1))
                     .build();
                 let cfg = t.config_for_test();
 
