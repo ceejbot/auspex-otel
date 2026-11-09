@@ -208,7 +208,6 @@ pub fn resolve_endpoint(raw: &str) -> Result<Endpoint, ConfigError> {
 
 /// Parse `OTEL_EXPORTER_OTLP_HEADERS` style strings ("k1=v1,k2=v2").
 /// Malformed individual pairs are skipped (with a debug log).
-/// This matches the Validate requirement for Task 4.1.
 pub fn parse_headers(raw: &str) -> Vec<(String, String)> {
     parse_kv_pairs(raw, "OTLP header")
 }

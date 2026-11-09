@@ -18,7 +18,7 @@ use tokio::task::JoinHandle;
 
 use crate::config::{Config, Endpoint, ExporterKind};
 use crate::exporter::{BatchWorker, Exporter, OtlpHttpExporter, ZipkinExporter};
-// Re-export the real type from span.rs now that it is defined (Task 2.1).
+// Re-exported so callers do not need to reach into `span`.
 pub use crate::span::FinishedSpan;
 
 /// Shutdown coordination, populated only when an exporter worker was spawned.
@@ -56,17 +56,15 @@ pub struct Pipeline {
     /// Touched only by `shutdown()`, never on the hot path.
     shutdown: Mutex<Option<ShutdownState>>,
 
-    // For Task 3.2 test support (separate std mpsc so plain #[test] can recv
-    // easily)
+    // Test support: a separate std mpsc so plain #[test] can recv easily.
     #[cfg(test)]
     test_sender: Option<Sender<FinishedSpan>>,
 }
 
 impl Pipeline {
     /// Primary constructor used by `Tracer` and `TracerBuilder`. It is the
-    /// official integration point with the fully resolved `Config` from
-    /// Task 4.1, and (Task 6.2) the point where the background exporter worker
-    /// is started.
+    /// official integration point with the fully resolved `Config`, and the
+    /// point where the background exporter worker is started.
     ///
     /// **Runtime requirement:** to actually export, this must be called from
     /// within a Tokio runtime (the normal `#[tokio::main]` axum case). When no
@@ -310,8 +308,8 @@ impl Pipeline {
 /// Construct the concrete exporter for the resolved config, if one is
 /// available.
 ///
-/// Returns `None` (export disabled) when the configured exporter has no
-/// implementation yet (Zipkin — Task 6.3) or when building it fails (e.g. an
+/// Returns `None` (export disabled) when building the configured exporter
+/// fails (e.g. an
 /// invalid configured header). Construction failure is logged, not fatal: the
 /// application keeps running with export disabled.
 fn build_exporter(config: &Config) -> Option<Arc<dyn Exporter>> {
@@ -596,7 +594,7 @@ mod tests {
 
         let p = Pipeline::from_config(Config::default());
 
-        // Create a minimal real FinishedSpan via OtelSpan (Task 2.1)
+        // Create a minimal real FinishedSpan via OtelSpan
         let live = OtelSpan::new(TraceId::ZERO, SpanId::ZERO, None, "test");
         let finished = live.finish();
 
@@ -620,7 +618,7 @@ mod tests {
 
         pipeline.send(finished);
 
-        // In Task 3.2 we can now observe the sent span
+        // Observe the sent span via the test receiver
         let received = receiver.recv().expect("should have received a FinishedSpan");
         assert_eq!(received.name, "test-span");
     }

@@ -3,7 +3,7 @@
 ## `basic.rs` — axum app exporting to Jaeger
 
 A minimal axum service wired with auspex, exporting traces over OTLP/HTTP.
-Doubles as the manual smoke test for the OTLP/HTTP exporter (Task 6.2).
+Doubles as the manual smoke test for the OTLP/HTTP exporter.
 
 ### Quick start
 

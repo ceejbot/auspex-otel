@@ -1,4 +1,4 @@
-//! Export pipeline components (Task 6.1).
+//! Export pipeline components.
 //!
 //! The `Exporter` trait is the seam between the batch worker and concrete
 //! wire-format exporters. The worker itself lives in `batch.rs`.
@@ -21,7 +21,7 @@ mod zipkin;
 
 /// Error returned by an `Exporter`.
 ///
-/// In v0.1 this is intentionally minimal. Real exporters (Task 6.2+) may
+/// In v0.1 this is intentionally minimal. Exporters may
 /// enrich it with more structured information.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportError {

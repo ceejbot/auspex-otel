@@ -41,7 +41,7 @@ name = "auspex"
 name = "basic"
 required-features = ["axum"]
 
-# Custom request-path benchmark (Task 7.2). Plain binary, not criterion:
+# Custom request-path benchmark. Plain binary, not criterion:
 # `harness = false` so `fn main()` runs under `cargo bench`.
 [[bench]]
 name = "hotpath"

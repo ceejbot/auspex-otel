@@ -1,4 +1,4 @@
-//! `tracestate` header preservation (Task 1.3).
+//! `tracestate` header preservation.
 //!
 //! Design goal:
 //! - Preserve inbound `tracestate` as an **opaque validated string**.

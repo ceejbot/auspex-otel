@@ -1,4 +1,4 @@
-//! In-memory test exporter (Task 6.1).
+//! In-memory test exporter.
 //!
 //! Records every batch it receives so tests can assert on them.
 //! Never returns errors unless explicitly configured to do so.

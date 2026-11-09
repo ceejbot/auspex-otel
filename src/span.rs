@@ -345,7 +345,7 @@ mod tests {
         assert_eq!(Status::default(), Status::Unset);
     }
 
-    // === Task 2.1: FinishedSpan and dropped counts (TDD skeletons) ===
+    // === FinishedSpan and dropped counts ===
 
     #[test]
     fn finished_span_is_immutable_snapshot() {
@@ -385,7 +385,7 @@ mod tests {
         assert_eq!(finished.dropped_links_count, 0);
     }
 
-    // === Task 1.1 driving tests for the accepted SmallVec attribute model ===
+    // === SmallVec attribute model ===
 
     #[test]
     fn record_overwrites_existing_key() {

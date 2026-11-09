@@ -1,4 +1,4 @@
-//! Request-path benchmark for auspex (Task 7.2).
+//! Request-path benchmark for auspex.
 //!
 //! Measures the latency and heap allocations auspex adds to a request, against
 //! the v0.1 targets: **< 50 µs p99 added latency** and **< 2

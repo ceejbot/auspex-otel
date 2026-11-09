@@ -321,7 +321,7 @@ mod tests {
         proptest! {
             #[test]
             fn traceparent_roundtrips(
-                // Generate non-zero IDs (the generators from Task 1.1 already guarantee this)
+                // Generate non-zero IDs (the generators already guarantee this)
                 trace_bytes in any::<[u8; 16]>(),
                 parent_bytes in any::<[u8; 8]>(),
                 sampled in any::<bool>(),

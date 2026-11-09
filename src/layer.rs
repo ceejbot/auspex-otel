@@ -32,11 +32,11 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
-        // Parent resolution order (per Task 3.1 design):
+        // Parent resolution order:
         // 1. Explicit parent provided to this span (e.g. span(parent = &parent)
         //    or #[instrument(parent = ...)]). This must beat "current span".
         // 2. The current span in the tracing context (lookup_current).
-        // 3. Remote parent injected by the HTTP middleware (Phase 5).
+        // 3. Remote parent injected by the HTTP middleware.
         // 4. Fresh trace (generate new TraceId).
 
         // Explicit parent (from attrs) takes precedence over the current
@@ -216,8 +216,8 @@ struct RemoteParentInfo {
     trace_state: Option<crate::propagation::TraceState>,
 }
 
-/// Extracts remote parent info from attributes recorded by the HTTP middleware
-/// (see Task 5.1). Only used for root spans.
+/// Extracts remote parent info from the `remote.*` attributes the HTTP
+/// middleware records. Only used for root spans.
 fn extract_remote_parent(attrs: &span::Attributes<'_>) -> Option<RemoteParentInfo> {
     // One-off visitor for the remote.* fields the middleware records.
     struct RemoteExtractor {
@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn explicit_parent_beats_current_tracing_context() {
-        // Validates the #1 rule in the Task 3.1 design:
+        // Validates the first parent-resolution rule:
         // "Explicit tracing parent" must win over "current span".
         let (layer, receiver) = setup_test_layer();
         let subscriber = Registry::default().with(layer);
@@ -393,7 +393,7 @@ mod tests {
         );
     }
 
-    // === Mission C: Task 2.3 Events (first named test case) ===
+    // === Events ===
 
     #[test]
     fn event_inside_span_attaches_to_current_span() {
@@ -416,7 +416,6 @@ mod tests {
         assert!(!finished.events.is_empty(), "event should be attached to the span");
     }
 
-    // Second named test case for Task 2.3
     #[test]
     fn event_outside_any_span_is_ignored() {
         let (layer, receiver) = setup_test_layer();
@@ -439,7 +438,7 @@ mod tests {
         );
     }
 
-    // Error event named tests (Task 2.3)
+    // === Error events ===
     #[test]
     fn error_level_event_sets_status_error() {
         let (layer, receiver) = setup_test_layer();
@@ -468,7 +467,7 @@ mod tests {
         assert!(matches!(finished.status, Status::Error { .. }));
     }
 
-    // Overflow named tests (Task 2.3)
+    // === Event overflow ===
     #[test]
     fn ninth_event_increments_dropped_events_count() {
         let (layer, receiver) = setup_test_layer();
@@ -568,8 +567,7 @@ mod tests {
         );
     }
 
-    // === Task 2.4 Links / follows_from named tests (per reviewed Design +
-    // Validate) ===
+    // === Links / follows_from ===
 
     #[test]
     fn link_has_empty_attributes_in_v0_1_and_within_same_trace() {

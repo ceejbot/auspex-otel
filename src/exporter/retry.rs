@@ -1,4 +1,4 @@
-//! Retry timing for the OTLP/HTTP exporter (Task 6.2).
+//! Retry timing for the OTLP/HTTP exporter.
 //!
 //! This module is intentionally small and **pure**: it computes the backoff
 //! delay for a given retry attempt and nothing else. The decision of *whether*

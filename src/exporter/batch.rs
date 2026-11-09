@@ -1,4 +1,4 @@
-//! The background batch worker (Task 6.1).
+//! The background batch worker.
 //!
 //! Pulls `FinishedSpan`s from the channel, accumulates them, and hands
 //! non-empty batches to an `Exporter` on size or schedule-delay boundaries.

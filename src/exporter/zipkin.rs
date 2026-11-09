@@ -1,4 +1,4 @@
-//! Zipkin v2 JSON exporter (Task 6.3).
+//! Zipkin v2 JSON exporter.
 //!
 //! Serializes `FinishedSpan`s to the [Zipkin v2 JSON span format][zipkin] and
 //! POSTs them (as a JSON array) to the configured endpoint — typically a local

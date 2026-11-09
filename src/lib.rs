@@ -86,7 +86,7 @@ pub(crate) mod context;
 pub(crate) mod field;
 pub(crate) mod span;
 
-// Propagation (traceparent + future tracestate) is internal for now.
+// Propagation is internal for now.
 pub(crate) mod propagation;
 
 // Public modules (re-exported below for a flat, ergonomic API).

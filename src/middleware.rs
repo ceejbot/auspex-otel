@@ -671,7 +671,6 @@ mod tests {
         // fast path are healthy.
     }
 
-    // First named test case for Task 4.2.
     #[test]
     fn cloned_tracer_shares_pipeline() {
         let cfg = Config::default();
@@ -736,7 +735,7 @@ mod tests {
         assert!(tracer.shutdown().await);
     }
 
-    // Named test case for Task 4.2 precedence (builder setters > env).
+    // Precedence: builder setters > env.
     // Uses temp-env for isolation (no serial needed for these).
     #[test]
     fn builder_setters_override_env_values() {
