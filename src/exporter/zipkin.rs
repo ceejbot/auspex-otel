@@ -138,7 +138,8 @@ impl ZipkinSpan {
         // No native Zipkin field for the W3C sampled bit; preserve it as a tag.
         tags.insert("otel.sampled".to_owned(), s.is_sampled.to_string());
 
-        // Events -> annotations; links -> annotations (no native Zipkin concept).
+        // Events -> annotations; links -> annotations (no native Zipkin
+        // concept).
         let mut annotations: Vec<Annotation> = s.events.iter().map(Annotation::from_event).collect();
         annotations.extend(s.links.iter().map(Annotation::from_link));
 

@@ -279,8 +279,9 @@ mod tests {
 
     #[test]
     fn formatter_cleans_unknown_flag_bits() {
-        // Even if a parsed TraceParent carries extra flag bits (allowed on input),
-        // the Display must emit only the clean sampled decision (00 or 01).
+        // Even if a parsed TraceParent carries extra flag bits (allowed on
+        // input), the Display must emit only the clean sampled decision (00 or
+        // 01).
         let trace = "4bf92f3577b34da6a3ce929d0e0e4736"
             .parse::<TraceId>()
             .expect("tradeid should be parsed");

@@ -57,7 +57,8 @@ impl Backoff {
             return None;
         }
 
-        // ceiling = base * 2^(attempt-1), saturating at `cap` (and on overflow).
+        // ceiling = base * 2^(attempt-1), saturating at `cap` (and on
+        // overflow).
         let multiplier = 1u32.checked_shl(attempt - 1).unwrap_or(u32::MAX);
         let ceiling = self
             .base
@@ -76,7 +77,8 @@ impl Backoff {
 pub(crate) fn jitter_fraction() -> f64 {
     let mut bytes = [0u8; 8];
     // If the RNG ever fails, fall back to the full ceiling (jitter = ~1.0):
-    // a slightly longer wait is harmless, and this path is effectively never hit.
+    // a slightly longer wait is harmless, and this path is effectively never
+    // hit.
     if getrandom::fill(&mut bytes).is_err() {
         return 1.0 - f64::EPSILON;
     }

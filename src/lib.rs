@@ -136,8 +136,9 @@ use tracing_subscriber::layer::SubscriberExt as _;
 pub fn init() -> Result<Tracer, InitError> {
     let tracer = Tracer::try_new()?;
 
-    // Build a minimal subscriber that only contains our OtelLayer (no fmt layer,
-    // no other noise). This is the "ergonomic path" promised by the design.
+    // Build a minimal subscriber that only contains our OtelLayer (no fmt
+    // layer, no other noise). This is the "ergonomic path" promised by the
+    // design.
     let otel_layer = tracer.subscriber_layer();
     let subscriber = Registry::default().with(otel_layer);
 
@@ -169,7 +170,8 @@ mod tests {
             TracerBuilder, init,
         };
 
-        // Also exercise the free function and the two main types users interact with.
+        // Also exercise the free function and the two main types users interact
+        // with.
         let _ = std::any::type_name::<Tracer>();
         let _ = std::any::type_name::<Config>();
         let _ = std::any::type_name::<OtelLayer>();
@@ -181,7 +183,8 @@ mod tests {
         let _ = std::any::type_name::<TraceId>();
         let _ = std::any::type_name::<dyn AuspexSpanExt>();
 
-        // init() is callable in signature (we don't run it here to avoid side effects).
+        // init() is callable in signature (we don't run it here to avoid side
+        // effects).
         let _: fn() -> Result<Tracer, InitError> = init;
     }
 }

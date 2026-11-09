@@ -117,7 +117,8 @@ fn event_to_proto(e: &Event) -> trace_v1::span::Event {
         time_unix_nano: system_time_to_nanos(e.timestamp),
         name: e.name.to_string(),
         attributes: attributes_to_proto(e.attributes.iter()),
-        // We enforce attribute limits before this point, so nothing is dropped here.
+        // We enforce attribute limits before this point, so nothing is dropped
+        // here.
         dropped_attributes_count: 0,
     }
 }
@@ -126,7 +127,8 @@ fn link_to_proto(l: &Link) -> trace_v1::span::Link {
     trace_v1::span::Link {
         trace_id: l.trace_id.as_bytes().to_vec(),
         span_id: l.span_id.as_bytes().to_vec(),
-        // Our internal Link model carries neither a per-link trace_state nor flags.
+        // Our internal Link model carries neither a per-link trace_state nor
+        // flags.
         trace_state: String::new(),
         attributes: attributes_to_proto(l.attributes.iter()),
         dropped_attributes_count: 0,
@@ -157,7 +159,8 @@ const fn span_kind_to_proto(k: crate::span::SpanKind) -> trace_v1::span::SpanKin
     match k {
         crate::span::SpanKind::Server => P::Server,
         crate::span::SpanKind::Client => P::Client,
-        // v0.1 only models Server/Client distinctly; everything else is Internal.
+        // v0.1 only models Server/Client distinctly; everything else is
+        // Internal.
         crate::span::SpanKind::Internal | crate::span::SpanKind::Producer | crate::span::SpanKind::Consumer => {
             P::Internal
         }
@@ -305,7 +308,8 @@ mod tests {
 
         assert_eq!(string_attr("service.version").as_deref(), Some("0.10.7"));
         assert_eq!(string_attr("deployment.environment").as_deref(), Some("prod"));
-        // Exactly one service.name key — no duplication from the attribute list.
+        // Exactly one service.name key — no duplication from the attribute
+        // list.
         assert_eq!(
             resource.attributes.iter().filter(|kv| kv.key == "service.name").count(),
             1

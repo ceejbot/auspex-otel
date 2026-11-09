@@ -21,14 +21,16 @@ fn init_installs_once_then_reports_already_set() {
             ("OTEL_TRACES_EXPORTER", None),
         ],
         || {
-            // The first call installs the global subscriber and hands back the tracer.
+            // The first call installs the global subscriber and hands back the
+            // tracer.
             let first = init();
             assert!(
                 first.is_ok(),
                 "first init() should install the global subscriber, got {first:?}"
             );
 
-            // The second call must detect the installed subscriber and say so precisely.
+            // The second call must detect the installed subscriber and say so
+            // precisely.
             let second = init();
             assert!(
                 matches!(second, Err(InitError::GlobalSubscriberAlreadySet)),
