@@ -456,10 +456,11 @@ where
         }
 
         // Only the matched route template is exported, as both `http.route`
-        // and `url.path`. The raw request path is never recorded: path
-        // parameters are identifiers, and in this crate's home domain
-        // identifiers are often protected health information. An unmatched
-        // request therefore carries no path at all.
+        // and `url.path`. The raw request path and the query string are never
+        // recorded: path parameters and query values are identifiers, and in
+        // this crate's home domain identifiers are often protected health
+        // information. An unmatched request therefore carries no path at all.
+        // Handlers that want a query value on the span record it themselves.
         #[cfg(feature = "axum")]
         if let Some(r) = req
             .extensions()
@@ -517,7 +518,6 @@ impl<S> TracerService<S> {
         use tracing::field::Empty;
 
         let method = req.method().as_str();
-        let query = sanitize_query(req.uri().query().unwrap_or(""));
         let scheme = req.uri().scheme_str().unwrap_or("http");
         let protocol = "http";
 
@@ -547,7 +547,6 @@ impl<S> TracerService<S> {
             tracing::info_span!(
                 "HTTP request",
                 "http.request.method" = method,
-                "url.query" = query.as_ref(),
                 "url.scheme" = scheme,
                 "network.protocol.name" = protocol,
                 "otel.name" = desired_name.as_ref(),
@@ -570,7 +569,6 @@ impl<S> TracerService<S> {
             tracing::info_span!(
                 "HTTP request",
                 "http.request.method" = method,
-                "url.query" = query.as_ref(),
                 "url.scheme" = scheme,
                 "network.protocol.name" = protocol,
                 "otel.name" = desired_name.as_ref(),
@@ -588,63 +586,6 @@ impl<S> TracerService<S> {
             )
         }
     }
-}
-
-const REDACTED_QUERY_VALUE: &str = "REDACTED";
-const SENSITIVE_QUERY_PARAMETERS: &[&str] = &[
-    "access_token", "id_token", "refresh_token", "token", "api_key", "api-key", "apikey", "client_secret", "password",
-    "passwd", "secret", "authorization", "auth", "code", "session", "session_id", "signature", "sig",
-    "x-amz-signature", "x-amz-credential", "x-amz-security-token", "x-goog-signature",
-];
-
-/// Redact credential-bearing query values while preserving the original query
-/// representation for every other parameter.
-///
-/// Matching is ASCII-case-insensitive and percent-encoded parameter names are
-/// decoded before comparison. The original spelling and encoding of every key
-/// is retained in the emitted query string.
-fn sanitize_query(query: &str) -> Cow<'_, str> {
-    if !query.split('&').any(query_segment_has_sensitive_value) {
-        return Cow::Borrowed(query);
-    }
-
-    let mut sanitized = String::with_capacity(query.len());
-    for (index, segment) in query.split('&').enumerate() {
-        if index > 0 {
-            sanitized.push('&');
-        }
-
-        let Some((key, value)) = segment.split_once('=') else {
-            sanitized.push_str(segment);
-            continue;
-        };
-
-        sanitized.push_str(key);
-        sanitized.push('=');
-        if is_sensitive_query_parameter(key) {
-            sanitized.push_str(REDACTED_QUERY_VALUE);
-        } else {
-            sanitized.push_str(value);
-        }
-    }
-
-    Cow::Owned(sanitized)
-}
-
-fn query_segment_has_sensitive_value(segment: &str) -> bool {
-    segment
-        .split_once('=')
-        .is_some_and(|(key, _)| is_sensitive_query_parameter(key))
-}
-
-fn is_sensitive_query_parameter(raw_key: &str) -> bool {
-    let decoded_key = url::form_urlencoded::parse(raw_key.as_bytes())
-        .next()
-        .map_or_else(|| Cow::Borrowed(raw_key), |(key, _)| key);
-
-    SENSITIVE_QUERY_PARAMETERS
-        .iter()
-        .any(|sensitive| decoded_key.eq_ignore_ascii_case(sensitive))
 }
 
 /// Normalize a response header name for the attribute key:
@@ -687,27 +628,6 @@ mod tests {
 
         // All clones must share the exact same Arc<Pipeline>.
         assert!(Arc::ptr_eq(&t1.inner, &t2.inner));
-    }
-
-    #[test]
-    fn safe_query_is_borrowed_and_unchanged() {
-        let query = "q=rust+tracing&page=2&empty=";
-        let sanitized = sanitize_query(query);
-
-        assert!(matches!(sanitized, Cow::Borrowed(_)));
-        assert_eq!(sanitized, query);
-    }
-
-    #[test]
-    fn sensitive_query_values_are_redacted_without_rewriting_other_parameters() {
-        let sanitized = sanitize_query(
-            "q=rust+tracing&access_token=oauth-secret&X-Amz-Signature=cloud-secret&access%5Ftoken=encoded-secret",
-        );
-
-        assert_eq!(
-            sanitized,
-            "q=rust+tracing&access_token=REDACTED&X-Amz-Signature=REDACTED&access%5Ftoken=REDACTED"
-        );
     }
 
     /// `Tracer::shutdown` delegates to the pipeline: it drains a buffered span
@@ -1159,46 +1079,46 @@ mod tests {
         );
     }
 
+    /// The query string is never exported, whatever it carries: identifiers
+    /// and credentials alike stay out of the span.
     #[cfg(feature = "axum")]
     #[tokio::test]
-    async fn sensitive_query_values_are_redacted_in_exported_span() {
+    async fn query_string_is_never_exported() {
         use axum::Router;
         use axum::routing::get;
         use tracing_subscriber::layer::SubscriberExt;
 
-        use crate::span::AttributeValue;
-
         let config = Config::default()
-            .with_service_name("query-redaction-test")
+            .with_service_name("query-test")
             .with_sink_uri("http://example.com");
 
         let (pipeline, receiver) = Pipeline::new_for_test(config);
         let tracer = Tracer {
             inner: pipeline.clone(),
         };
-
-        let layer = tracer.subscriber_layer();
-        let subscriber = tracing_subscriber::Registry::default().with(layer);
+        let subscriber = tracing_subscriber::Registry::default().with(tracer.subscriber_layer());
         let _guard = tracing::subscriber::set_default(subscriber);
 
         let app = Router::new().route("/search", get(|| async { "ok" })).layer(tracer);
-        let uri = "/search?q=rust&access_token=oauth-secret&X-Amz-Signature=cloud-secret";
+        let uri = "/search?q=rust&member_id=M-998877&access_token=oauth-secret";
 
-        let (_status, received) = drive_and_collect(app, receiver, uri).await;
+        let (status, received) = drive_and_collect(app, receiver, uri).await;
+        assert_eq!(status, 200);
         let span = root_http_span(&received);
 
         assert!(
-            span.attributes.iter().any(|(key, value)| {
-                key == "url.query"
-                    && matches!(
-                        value,
-                        AttributeValue::String(query)
-                            if query == "q=rust&access_token=REDACTED&X-Amz-Signature=REDACTED"
-                    )
-            }),
-            "the real exported HTTP span must contain only the sanitized query. attrs: {:?}",
+            string_attr(span, "url.query").is_none(),
+            "url.query must not be exported: {:?}",
             span.attributes
         );
+        assert_eq!(string_attr(span, "url.path"), Some("/search"));
+        for needle in ["M-998877", "oauth-secret", "q=rust"] {
+            assert!(
+                !any_string_attr_contains(span, needle),
+                "{needle} leaked into an attribute: {:?}",
+                span.attributes
+            );
+        }
     }
 
     // Opt-in response-header capture: a matching prefix is captured under the

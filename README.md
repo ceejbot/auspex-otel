@@ -163,14 +163,14 @@ blocks on export.
 
 Each HTTP request becomes a root span with OTEL-semantic attributes:
 
-- `http.request.method`, `url.scheme`, `url.query` (when present),
-  `network.protocol.name`. Known credential-bearing query values (OAuth tokens
-  and codes, API keys, passwords, session identifiers, and signatures) are
-  replaced with `REDACTED` before export.
+- `http.request.method`, `url.scheme`, `network.protocol.name`
 - `http.route` and `url.path` — both carry the matched route template
   (`/users/{user_id}`), only with the `axum` feature and a matched route. The
-  raw request path is never exported: path parameters are identifiers, and
-  identifiers are often protected data. An unmatched request carries no path.
+  raw request path and the query string are never exported: path parameters
+  and query values are identifiers, and identifiers are often protected data.
+  An unmatched request carries no path. If a query value genuinely belongs on
+  the span, record it in the handler with `Span::current().record(...)` or a
+  field on your own `#[instrument]` span.
 - `http.response.status_code`
 - `user_agent.original` and `server.address` — when those headers are present
 - `error.type` + OTEL `Error` status — on 5xx responses and service errors
