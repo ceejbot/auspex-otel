@@ -11,12 +11,12 @@ pub trait AuspexSpanExt {
     /// # Examples
     ///
     /// ```rust
-    /// use auspex_otel::AuspexSpanExt;
+    /// use auspex::AuspexSpanExt;
     /// use tracing::Span;
     ///
     /// // Get the current trace_id context from the current tracing span,
     /// // or `None` if the span is not instrumented by Auspex
-    /// let trace_id = Span::current().context().map(|ctx| ctx.trace_id())
+    /// let trace_id = Span::current().span_context().map(|ctx| ctx.trace_id());
     /// ```
     fn span_context(&self) -> Option<SpanContext>;
 }
